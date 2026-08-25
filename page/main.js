@@ -171,22 +171,11 @@ let otherText = "";
 let submitting = false;
 let pollTimer = null;
 
-// Caption sets for the generating screen — first slide vs after an answer.
-const FIRST_LINES = [
-  "Reading the project definition…",
-  "Working out what to ask first…",
-  "Writing the first slide…",
-];
-const NEXT_LINES = [
-  "Reading your answer…",
-  "Writing the requirement into the definition…",
-  "Looking through the pending questions…",
-  "Choosing the next question…",
-];
-// Live references into the mounted generating screen, so polls can update
-// its note without rebuilding the DOM (a rebuild restarts the dot animation
-// and jumps the caption — it reads as flicker, not loading).
-let thinkingTimer = null;
+// Live reference into the mounted generating screen, so polls can update the
+// real definition-change note without rebuilding the DOM (a rebuild restarts
+// the dot animation — it reads as flicker, not loading). No fabricated
+// step-by-step captions: the page cannot see what the agent is doing, so it
+// says only what it knows — a question is being generated.
 let thinkingNoteEl = null;
 
 function schedulePoll() {
@@ -387,30 +376,17 @@ function startScreen() {
 }
 
 /** The generating screen: shown whenever the next question is not ready yet
- * (interview start and after every answer). Built ONCE per thinking phase —
- * the caption rotates in place on a timer and the definition-change note is
- * patched by updateThinkingNote(), so polling never rebuilds the DOM. */
+ * (interview start and after every answer). Built ONCE per thinking phase;
+ * only the real definition-change note is patched in afterwards. Nothing
+ * here narrates invented steps — the page cannot see the agent's progress. */
 function thinkingScreen() {
   const card = el("div", "card center");
   card.appendChild(
-    el("h1", "", state.answered > 0 ? "Generating the next question" : "Starting the interview"),
+    el("h1", "", state.answered > 0 ? "Generating the next question…" : "Preparing the first question…"),
   );
   const dots = el("div", "dots");
   for (let i = 0; i < 3; i++) dots.appendChild(el("i"));
   card.appendChild(dots);
-  const lines = state.answered > 0 ? NEXT_LINES : FIRST_LINES;
-  const line = el("div", "thinking-line", lines[0]);
-  card.appendChild(line);
-  let tick = 0;
-  clearInterval(thinkingTimer);
-  thinkingTimer = setInterval(() => {
-    if (!line.isConnected) {
-      clearInterval(thinkingTimer);
-      return;
-    }
-    tick = (tick + 1) % lines.length;
-    line.textContent = lines[tick];
-  }, 2400);
   thinkingNoteEl = el("div", "last-note");
   card.appendChild(thinkingNoteEl);
   updateThinkingNote();
