@@ -20,16 +20,18 @@ describe("manifest", () => {
     expect(manifest.http_routes).toEqual(["GET /plugin-api/v1/project-planner"]);
   });
 
-  it("scopes its page items (never a global sidebar entry)", () => {
-    // A global sidebar page carries no x-peckboard-* scope header, so every
-    // folder-scoped host call would fail. See the manifest comment.
+  it("launches ONLY from the repo browser — no folder-level surface", () => {
+    // A global sidebar page carries no x-peckboard-* scope header, and
+    // folder/project/session buttons would put the planner back at the
+    // folder level. The single folder_items entry is repo_scoped: core
+    // hides it from folder surfaces and offers it per repo row.
     expect(manifest.sidebar_items).toBeUndefined();
-    for (const kind of ["folder_items", "project_items", "session_items"]) {
-      expect(manifest[kind]).toHaveLength(1);
-      expect(manifest[kind][0].path).toBe("/plugin-api/v1/project-planner");
-    }
+    expect(manifest.project_items).toBeUndefined();
+    expect(manifest.session_items).toBeUndefined();
+    expect(manifest.folder_items).toHaveLength(1);
+    expect(manifest.folder_items[0].repo_scoped).toBe(true);
+    expect(manifest.folder_items[0].path).toBe("/plugin-api/v1/project-planner");
   });
-
   it("names MCP tools within core's charset rule", () => {
     const names = manifest.mcp_tools.map((t: any) => t.name);
     expect(names).toEqual([

@@ -12,7 +12,7 @@ const DESCRIPTION =
   "confirmation. Each answer is written into the repo's PROJECT_DEFINITION.md " +
   "as a requirement; an existing definition is read first and the interview " +
   "continues from it. Each repo's interview resets independently.";
-const VERSION = "0.2.0";
+const VERSION = "0.2.1";
 
 const REPOSITORY = "https://github.com/peckboard/project-planner";
 // Inline SVG (lucide "clipboard-list") for the page items; rendered sandboxed.
@@ -45,19 +45,22 @@ export function manifestJson(): string {
       "contribute_sidebar", // the page items below
     ],
 
-    // Deliberately NOT a global `sidebar_items` entry: a global page carries no
-    // `x-peckboard-*` scope header, so every folder-scoped host call (the
-    // definition file, the per-folder state) would fail. The three item kinds
-    // below all carry scope; `folder_items` names the folder outright, and the
-    // project/session items borrow their folder.
+    // The ONLY launch surface is the repo browser: `repo_scoped: true` tells
+    // core to hide this from every folder-level surface (the Folders row,
+    // the repo-list header) and offer it per repo row instead, opening the
+    // page with `?repo=<path>`. It stays a `folder_items` entry because that
+    // is what carries the folder scope header the page's host calls need —
+    // and deliberately NOT `sidebar_items` (a global page carries no scope
+    // header at all). No project/session items: the planner is a per-repo
+    // tool, and surfacing it per folder-ish contexts is what confused it.
     folder_items: [
-      { id: "project-planner", label: "Project Planner", icon: ICON, path: "/plugin-api/v1/project-planner" },
-    ],
-    project_items: [
-      { id: "project-planner", label: "Project Planner", icon: ICON, path: "/plugin-api/v1/project-planner" },
-    ],
-    session_items: [
-      { id: "project-planner", label: "Project Planner", icon: ICON, path: "/plugin-api/v1/project-planner" },
+      {
+        id: "project-planner",
+        label: "Project Planner",
+        icon: ICON,
+        path: "/plugin-api/v1/project-planner",
+        repo_scoped: true,
+      },
     ],
 
     http_routes: ["GET /plugin-api/v1/project-planner"],

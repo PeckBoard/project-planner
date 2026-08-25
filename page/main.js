@@ -212,13 +212,19 @@ function schedulePoll() {
   pollTimer = setTimeout(refresh, ms);
 }
 
+// Deep link from the repo browser: the host forwards the app URL's query
+// into the iframe, so `?repo=<path>` opens the planner directly on that
+// repo ('.' = folder root). It outranks the remembered pick.
+const urlRepo = new URLSearchParams(window.location.search).get("repo");
+
 async function refresh() {
   try {
     if (repos === null) {
       repos = (await getJSON(P + "/repos")).repos || [];
       const remembered = recall("planner-repo");
       if (currentRepo === null) {
-        if (repos.length === 1) currentRepo = repos[0].path;
+        if (urlRepo && repos.some((r) => r.path === urlRepo)) currentRepo = urlRepo;
+        else if (repos.length === 1) currentRepo = repos[0].path;
         else if (remembered && repos.some((r) => r.path === remembered)) currentRepo = remembered;
       }
     }
