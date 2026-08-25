@@ -1,6 +1,6 @@
 {
   "name": "peckboard-project-planner",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "PeckBoard plugin: an interview-style slideshow that builds a project definition file. An agent session asks one pointed question per slide — fill-in-the-blank or justified multiple choice, with diagrams — and writes each answer into PROJECT_DEFINITION.md as a requirement.",
   "scripts": {

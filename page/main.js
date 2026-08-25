@@ -171,13 +171,23 @@ let otherText = "";
 let submitting = false;
 let pollTimer = null;
 
-const THINKING_LINES = [
+// Caption sets for the generating screen — first slide vs after an answer.
+const FIRST_LINES = [
+  "Reading the project definition…",
+  "Working out what to ask first…",
+  "Writing the first slide…",
+];
+const NEXT_LINES = [
   "Reading your answer…",
   "Writing the requirement into the definition…",
   "Looking through the pending questions…",
   "Choosing the next question…",
 ];
-let thinkingTick = 0;
+// Live references into the mounted generating screen, so polls can update
+// its note without rebuilding the DOM (a rebuild restarts the dot animation
+// and jumps the caption — it reads as flicker, not loading).
+let thinkingTimer = null;
+let thinkingNoteEl = null;
 
 function schedulePoll() {
   clearTimeout(pollTimer);
@@ -191,8 +201,16 @@ async function refresh() {
     const slideChanged =
       (next.slide ? next.slide.slide_no : -1) !== (state && state.slide ? state.slide.slide_no : -1);
     const statusChanged = !state || state.status !== next.status;
+    const noteChanged = state && state.last_note !== next.last_note;
+    // First definition write lands mid-generation — re-render so the topbar
+    // gains its "View definition" toggle without waiting for the slide.
+    const defChanged = state && state.definition_exists !== next.definition_exists;
     state = next;
-    if (statusChanged || slideChanged || state.status === "thinking") render();
+    if (statusChanged || slideChanged || defChanged) {
+      render();
+    } else if (state.status === "thinking" && noteChanged) {
+      updateThinkingNote();
+    }
   } catch (e) {
     state = { status: "bridge-error", error: e.message };
     render();
@@ -368,17 +386,42 @@ function startScreen() {
   return card;
 }
 
+/** The generating screen: shown whenever the next question is not ready yet
+ * (interview start and after every answer). Built ONCE per thinking phase —
+ * the caption rotates in place on a timer and the definition-change note is
+ * patched by updateThinkingNote(), so polling never rebuilds the DOM. */
 function thinkingScreen() {
   const card = el("div", "card center");
+  card.appendChild(
+    el("h1", "", state.answered > 0 ? "Generating the next question" : "Starting the interview"),
+  );
   const dots = el("div", "dots");
   for (let i = 0; i < 3; i++) dots.appendChild(el("i"));
   card.appendChild(dots);
-  thinkingTick = (thinkingTick + 1) % THINKING_LINES.length;
-  card.appendChild(el("div", "thinking-line", THINKING_LINES[thinkingTick]));
-  if (state.last_note) {
-    card.appendChild(el("div", "last-note", "✓ " + state.last_note));
-  }
+  const lines = state.answered > 0 ? NEXT_LINES : FIRST_LINES;
+  const line = el("div", "thinking-line", lines[0]);
+  card.appendChild(line);
+  let tick = 0;
+  clearInterval(thinkingTimer);
+  thinkingTimer = setInterval(() => {
+    if (!line.isConnected) {
+      clearInterval(thinkingTimer);
+      return;
+    }
+    tick = (tick + 1) % lines.length;
+    line.textContent = lines[tick];
+  }, 2400);
+  thinkingNoteEl = el("div", "last-note");
+  card.appendChild(thinkingNoteEl);
+  updateThinkingNote();
   return card;
+}
+
+/** Patch the note line under the generating dots ("✓ Recorded the purpose")
+ * when the agent reports a definition change mid-generation. */
+function updateThinkingNote() {
+  if (!thinkingNoteEl || !thinkingNoteEl.isConnected) return;
+  thinkingNoteEl.textContent = state && state.last_note ? "✓ " + state.last_note : "";
 }
 
 function slideScreen() {

@@ -9,7 +9,7 @@ const DESCRIPTION =
   "another by a dedicated agent session. Each answer is written into " +
   "PROJECT_DEFINITION.md at the folder root as a requirement; an existing " +
   "definition is read first and the interview continues from it.";
-const VERSION = "0.1.1";
+const VERSION = "0.1.2";
 
 const REPOSITORY = "https://github.com/peckboard/project-planner";
 // Inline SVG (lucide "clipboard-list") for the page items; rendered sandboxed.
