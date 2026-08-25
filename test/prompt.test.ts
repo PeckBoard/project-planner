@@ -14,6 +14,12 @@ describe("planner contract", () => {
     expect(SYSTEM_PROMPT).toMatch(/understandable in a vacuum/);
   });
 
+
+  it("tells the agent to check existing code and propose, never presume", () => {
+    expect(SYSTEM_PROMPT).toContain("proposed_answer");
+    expect(SYSTEM_PROMPT).toMatch(/code already answers/i);
+    expect(SYSTEM_PROMPT).toMatch(/never treat the code's answer as final/i);
+  });
   it("requires a definition write after every answer", () => {
     expect(SYSTEM_PROMPT).toContain("project_planner_write_definition");
     expect(SYSTEM_PROMPT).toMatch(/After every answer/);

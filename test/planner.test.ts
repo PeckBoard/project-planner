@@ -149,6 +149,38 @@ describe("project_planner_ask", () => {
     const st = docs.docs[KEY] as any;
     expect(st.slide.question).toBe("First ___?");
   });
+
+  it("requires evidence when the code proposes an answer", () => {
+    const r = toolAsk(
+      {
+        topic: "Technology",
+        kind: "fill",
+        question: "The backend language is ___.",
+        why: "W.",
+        proposed_answer: "Rust",
+      },
+      ctx,
+    );
+    expect(r.error).toMatch(/evidence is required/);
+  });
+
+  it("stores a code-derived proposal with its evidence on the slide", () => {
+    const r = toolAsk(
+      {
+        topic: "Technology",
+        kind: "fill",
+        question: "The backend language is ___.",
+        why: "W.",
+        proposed_answer: "Rust",
+        evidence: "Cargo.toml declares a Rust 2024 crate.",
+      },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    const st = docs.docs[KEY] as any;
+    expect(st.slide.proposed_answer).toBe("Rust");
+    expect(st.slide.evidence).toMatch(/Cargo.toml/);
+  });
 });
 
 describe("answer", () => {

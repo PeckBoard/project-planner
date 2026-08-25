@@ -45,6 +45,12 @@ export interface Slide {
   multi: boolean;
   blank_hint: string | null;
   diagram: string | null;
+  /** The answer the folder's existing code supports, when the agent found
+   * one — the slide offers one-click confirmation and correction. */
+  proposed_answer: string | null;
+  /** One sentence naming where the code shows it; required with a proposal
+   * so the user can judge the conclusion. */
+  evidence: string | null;
 }
 
 export interface HistoryEntry {
@@ -378,6 +384,15 @@ export function toolAsk(args: any, context: any): any {
       };
     }
   }
+  const proposedAnswer = asString(args?.proposed_answer) || null;
+  const evidence = asString(args?.evidence) || null;
+  if (proposedAnswer && !evidence) {
+    return {
+      error:
+        "evidence is required with proposed_answer — one sentence naming where the code shows " +
+        "it, so the user can judge the conclusion",
+    };
+  }
   const slide: Slide = {
     slide_no: state.history.length + 1,
     topic,
@@ -388,6 +403,8 @@ export function toolAsk(args: any, context: any): any {
     multi: args?.multi === true,
     blank_hint: asString(args?.blank_hint) || null,
     diagram: asString(args?.diagram) || null,
+    proposed_answer: proposedAnswer,
+    evidence: proposedAnswer ? evidence : null,
   };
   storePut(COLLECTION, folderId, { ...state, status: "waiting", slide, nudges: 0 });
   return {

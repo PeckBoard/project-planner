@@ -9,7 +9,7 @@ const DESCRIPTION =
   "another by a dedicated agent session. Each answer is written into " +
   "PROJECT_DEFINITION.md at the folder root as a requirement; an existing " +
   "definition is read first and the interview continues from it.";
-const VERSION = "0.1.3";
+const VERSION = "0.1.4";
 
 const REPOSITORY = "https://github.com/peckboard/project-planner";
 // Inline SVG (lucide "clipboard-list") for the page items; rendered sandboxed.
@@ -133,6 +133,21 @@ export function manifestJson(): string {
               description:
                 "Optional small mermaid source (flowchart or sequence, at most ~12 nodes) picturing " +
                 "the problem or the options. Omit when it would not help.",
+            },
+            proposed_answer: {
+              type: "string",
+              description:
+                "When the folder's existing code already answers this question: the conclusion the " +
+                "code supports, phrased as the answer. The slide shows it with a one-click Confirm " +
+                "and the user may correct it instead. For 'choice', match an option label when one " +
+                "fits. Requires `evidence`. Omit when the code is silent — never propose a guess.",
+            },
+            evidence: {
+              type: "string",
+              description:
+                "Required with proposed_answer: one plain sentence naming where the code shows it, " +
+                "e.g. 'Cargo.toml declares Axum with Diesel/SQLite'. Shown to the user under the " +
+                "proposal so they can judge it.",
             },
           },
           required: ["topic", "kind", "question", "why"],

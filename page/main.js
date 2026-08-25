@@ -402,7 +402,19 @@ function updateThinkingNote() {
 
 function slideScreen() {
   const s = state.slide;
-  chosenGuard(s);
+  const isNewSlide = chosenGuard(s);
+  // A confirmed-or-corrected slide starts prefilled with what the code
+  // suggests, so Confirm and Submit agree until the user changes something.
+  if (isNewSlide && s.proposed_answer) {
+    if (s.kind === "fill") {
+      otherText = s.proposed_answer;
+    } else {
+      const match = s.options.find(
+        (o) => o.label.trim().toLowerCase() === s.proposed_answer.trim().toLowerCase(),
+      );
+      if (match) chosen.add(match.label);
+    }
+  }
   const card = el("div", "card");
   card.dataset.slide = String(s.slide_no);
 
@@ -422,7 +434,7 @@ function slideScreen() {
     const parts = s.question.split("___");
     parts.forEach((part, i) => {
       q.appendChild(document.createTextNode(part));
-      if (i < parts.length - 1) q.appendChild(el("span", "blank", " "));
+      if (i < parts.length - 1) q.appendChild(el("span", "blank", " "));
     });
   } else {
     q.textContent = s.question;
@@ -446,6 +458,43 @@ function slideScreen() {
   const err = el("div", "error-box");
   err.style.display = "none";
 
+  // Shared submit path for both the proposal's Confirm and the normal button.
+  const send = async (answerText, btn, busyLabel, idleLabel) => {
+    if (submitting || !answerText) return;
+    submitting = true;
+    btn.disabled = true;
+    btn.textContent = busyLabel;
+    try {
+      await postJSON(P + "/answer", { answer: answerText });
+      chosen = new Set();
+      otherText = "";
+      await refresh();
+    } catch (e) {
+      err.textContent = e.message;
+      err.style.display = "";
+      btn.textContent = idleLabel;
+      btn.disabled = false;
+    } finally {
+      submitting = false;
+    }
+  };
+
+  // The code already answers this: show the conclusion + its evidence with a
+  // one-click Confirm. The regular controls below stay live as the
+  // correction path — answering normally overrides the proposal.
+  if (s.proposed_answer) {
+    const panel = el("div", "proposal");
+    panel.appendChild(el("span", "proposal-chip", "Found in your code"));
+    const body = el("div", "proposal-body");
+    body.appendChild(el("div", "proposal-answer", s.proposed_answer));
+    if (s.evidence) body.appendChild(el("div", "proposal-evidence", s.evidence));
+    panel.appendChild(body);
+    const confirm = el("button", "primary-btn proposal-confirm", "Confirm");
+    confirm.onclick = () => send(s.proposed_answer, confirm, "Sending…", "Confirm");
+    panel.appendChild(confirm);
+    card.appendChild(panel);
+  }
+
   let getAnswer;
   if (s.kind === "choice") {
     const list = el("div", "options");
@@ -463,6 +512,7 @@ function slideScreen() {
   } else {
     const input = el("input", "fill-input");
     input.placeholder = s.blank_hint || "Type your answer…";
+    input.value = otherText;
     input.oninput = () => {
       otherText = input.value;
       syncSubmit();
@@ -471,7 +521,7 @@ function slideScreen() {
       if (e.key === "Enter" && !submit.disabled) submit.onclick();
     };
     card.appendChild(input);
-    setTimeout(() => input.focus(), 50);
+    if (!s.proposed_answer) setTimeout(() => input.focus(), 50);
     getAnswer = () => otherText.trim();
   }
 
@@ -479,32 +529,19 @@ function slideScreen() {
 
   const actions = el("div", "actions");
   const submit = el("button", "primary-btn", "Submit answer");
-  submit.disabled = true;
-  submit.onclick = async () => {
-    if (submitting) return;
-    submitting = true;
-    submit.disabled = true;
-    submit.textContent = "Sending…";
-    try {
-      await postJSON(P + "/answer", { answer: getAnswer() });
-      chosen = new Set();
-      otherText = "";
-      await refresh();
-    } catch (e) {
-      err.textContent = e.message;
-      err.style.display = "";
-      submit.textContent = "Submit answer";
-      submit.disabled = false;
-    } finally {
-      submitting = false;
-    }
-  };
+  submit.onclick = () => send(getAnswer(), submit, "Sending…", "Submit answer");
   actions.appendChild(submit);
   actions.appendChild(
     el(
       "span",
       "action-hint",
-      s.kind === "choice" ? (s.multi ? "Pick one or more" : "Pick one") : "Fill in the blank",
+      s.proposed_answer
+        ? "Confirm what the code shows, or answer differently here"
+        : s.kind === "choice"
+          ? s.multi
+            ? "Pick one or more"
+            : "Pick one"
+          : "Fill in the blank",
     ),
   );
   card.appendChild(actions);
@@ -512,18 +549,23 @@ function slideScreen() {
   function syncSubmit() {
     submit.disabled = !getAnswer();
   }
+  syncSubmit();
   return card;
 }
 
-/** Reset selection state when a new slide arrives. */
+/** Reset selection state when a new slide arrives; true when it did. Keyed
+ * on number + question so slide 1 of a fresh interview (after a reset)
+ * still counts as new. */
 function chosenGuard(slide) {
-  if (lastSlideNo !== slide.slide_no) {
-    lastSlideNo = slide.slide_no;
+  const key = slide.slide_no + ":" + slide.question;
+  if (lastSlideNo !== key) {
+    lastSlideNo = key;
     chosen = new Set();
     otherText = "";
+    return true;
   }
+  return false;
 }
-
 function optionCard(slide, option, onChange) {
   const btn = el("button", "option" + (slide.multi ? " multi-mark" : ""));
   btn.type = "button";

@@ -426,4 +426,45 @@ body {
   .card { padding: 22px 18px; }
   .question { font-size: 20px; }
 }
+
+/* ── code-derived proposal ────────────────────────────────────── */
+.proposal {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border: 1.5px solid var(--ok);
+  background: color-mix(in srgb, var(--ok) 7%, transparent);
+  border-radius: 14px;
+  padding: 13px 16px;
+  margin-bottom: 18px;
+}
+.proposal-chip {
+  flex: none;
+  align-self: flex-start;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: #fff;
+  background: var(--ok);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+.proposal-body { flex: 1; min-width: 0; }
+.proposal-answer { font-weight: 650; }
+.proposal-evidence {
+  font-size: 12.5px;
+  color: var(--text-2);
+  margin-top: 2px;
+}
+.proposal-confirm {
+  flex: none;
+  padding: 9px 20px;
+  background: var(--ok);
+  box-shadow: none;
+}
+@media (max-width: 560px) {
+  .proposal { flex-wrap: wrap; }
+  .proposal-chip { order: -1; }
+}
 `;

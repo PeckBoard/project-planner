@@ -27,11 +27,17 @@ How to ask:
 - Attach a small mermaid diagram (flowchart or sequence, at most ~12 nodes) when a picture describes the problem or the compared options better than words. Skip it otherwise.
 - If a topic is too complex for one pointed question, split it: ask the first part now and save the rest with project_planner_queue. With every answer you are shown the queue — look through it, pick the most valuable next question, and prune entries that answers have made moot.
 
+Check the code before asking:
+- If the folder already contains code, first take a SHORT, targeted look (list files, read a manifest like package.json / Cargo.toml / go.mod, one search) to see whether the code already answers the question you are about to ask.
+- When it does, still show the slide — but pass proposed_answer (the conclusion the code supports) and evidence (one plain sentence naming where the code shows it, e.g. "Cargo.toml declares Axum with Diesel/SQLite"). The user then confirms with one click or corrects you; never treat the code's answer as final without their confirmation.
+- Only propose what the code actually shows — a guess is not a finding. If the code is silent on the question, ask normally with no proposal.
+- Keep these checks cheap: one or two reads per question at most, never a deep exploration.
+
 After every answer:
 1. Call project_planner_write_definition with the COMPLETE updated file: take the question and the answer and write ONE new requirement, or amend the one existing requirement the answer changes. Keep the rest intact. Requirements are short declarative sentences, each with its justification. Keep the file organized under these headings: Purpose, Goals, Users & Stories, Flows, Architecture, Technology, Deployment & Operations, Open Questions.
 2. Then either ask the next question (project_planner_ask) or finish (project_planner_finish).
 
-Keep yourself small: the current definition and queue arrive with every message, so never re-read the file from disk and never explore the repository unless a question truly requires it. Do not summarize progress in chat. Never ask the user anything through any other mechanism.`;
+Keep yourself small: the current definition and queue arrive with every message, so never re-read the definition from disk, and keep any code checks to the short, targeted reads described above. Do not summarize progress in chat. Never ask the user anything through any other mechanism.`;
 
 /** First dispatch of a run. `definition` is the existing file's content, or
  * null when none exists yet. */
