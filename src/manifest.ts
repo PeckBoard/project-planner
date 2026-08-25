@@ -9,9 +9,9 @@ const DESCRIPTION =
   "another by a dedicated agent session. Each answer is written into " +
   "PROJECT_DEFINITION.md at the folder root as a requirement; an existing " +
   "definition is read first and the interview continues from it.";
-const VERSION = "0.1.0";
-const REPOSITORY = "https://github.com/peckboard/project-planner";
+const VERSION = "0.1.1";
 
+const REPOSITORY = "https://github.com/peckboard/project-planner";
 // Inline SVG (lucide "clipboard-list") for the page items; rendered sandboxed.
 const ICON =
   '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" ' +

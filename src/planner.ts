@@ -305,17 +305,26 @@ function settleRun(folderId: string, state: PlannerState): PlannerState {
 // ── Agent-facing tools (mcp.tool.invoke) ────────────────────────────────────
 
 /** Guard: tools only accept calls from the folder's own planner session, so a
- * stray agent in the same folder can't hijack the slideshow. Returns the
- * state, or a refusal string. */
+ * stray agent in the same folder can't hijack the slideshow.
+ *
+ * The invoke context arrives CAMEL-CASE from core (`routes/mcp.rs` →
+ * `dispatch_tool_call` builds `{sessionId, projectId, cardId, folderId}`);
+ * the snake_case forms are accepted too in case that shape ever changes.
+ * Reading the wrong casing here is exactly the 0.1.0 bug that made every
+ * tool call fail with "no folder scope" and the interview never wait. */
 function plannerStateFor(context: any): { folderId: string; state: PlannerState } {
-  const folderId: string | null =
-    typeof context?.folder_id === "string" && context.folder_id ? context.folder_id : null;
+  const pick = (...vals: unknown[]): string | null => {
+    for (const v of vals) {
+      if (typeof v === "string" && v) return v;
+    }
+    return null;
+  };
+  const folderId = pick(context?.folderId, context?.folder_id);
   if (!folderId) {
     throw new Error("this tool only works from a session inside a workspace folder");
   }
   const state = loadState(folderId);
-  const caller: string | null =
-    typeof context?.session_id === "string" && context.session_id ? context.session_id : null;
+  const caller = pick(context?.sessionId, context?.session_id);
   if (!state.session_id || caller !== state.session_id) {
     throw new Error(
       "this tool is reserved for the Project Planner interview session — start an interview " +
@@ -332,6 +341,16 @@ function asString(v: unknown): string {
 /** project_planner_ask — validate and publish the next slide. */
 export function toolAsk(args: any, context: any): any {
   const { folderId, state } = plannerStateFor(context);
+  // One slide at a time IS the product: a second ask before the user answered
+  // would silently replace the showing slide and the interview would stop
+  // waiting for answers. Refuse so the model ends its turn instead.
+  if (state.status === "waiting") {
+    return {
+      error:
+        "a slide is already showing and unanswered — do not ask again; end your turn and wait " +
+        "for the user's answer to arrive as the next message",
+    };
+  }
   const kind = asString(args?.kind);
   const question = asString(args?.question);
   const why = asString(args?.why);

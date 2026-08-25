@@ -33,7 +33,10 @@ function baseHandlers(docs: ReturnType<typeof docStore>) {
   };
 }
 
-const ctx = { folder_id: FOLDER, session_id: SESSION };
+// Core sends the invoke context CAMEL-CASE ({sessionId, folderId} — see
+// peckboard/src/service/mcp_server/mod.rs dispatch_tool_call). The fixture
+// mirrors that exactly; reading snake_case here was the 0.1.0 bug.
+const ctx = { folderId: FOLDER, sessionId: SESSION };
 
 function runningState(docs: ReturnType<typeof docStore>) {
   docs.docs[KEY] = { ...emptyState(), status: "thinking", session_id: SESSION, model: "m" };
@@ -126,9 +129,25 @@ describe("project_planner_ask", () => {
   });
 
   it("only accepts the folder's own planner session", () => {
-    expect(() => toolAsk({ topic: "T", kind: "fill", question: "Q ___", why: "W." }, { folder_id: FOLDER, session_id: "intruder" })).toThrow(
+    expect(() => toolAsk({ topic: "T", kind: "fill", question: "Q ___", why: "W." }, { folderId: FOLDER, sessionId: "intruder" })).toThrow(
       /reserved for the Project Planner/,
     );
+  });
+
+  it("accepts the legacy snake_case context shape too", () => {
+    const r = toolAsk(
+      { topic: "T", kind: "fill", question: "Name ___?", why: "W." },
+      { folder_id: FOLDER, session_id: SESSION },
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it("refuses a second ask while a slide is unanswered", () => {
+    toolAsk({ topic: "T", kind: "fill", question: "First ___?", why: "W." }, ctx);
+    const r = toolAsk({ topic: "T", kind: "fill", question: "Second ___?", why: "W." }, ctx);
+    expect(r.error).toMatch(/already showing and unanswered/);
+    const st = docs.docs[KEY] as any;
+    expect(st.slide.question).toBe("First ___?");
   });
 });
 
