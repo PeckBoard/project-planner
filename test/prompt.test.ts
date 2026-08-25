@@ -26,15 +26,18 @@ describe("planner contract", () => {
     expect(SYSTEM_PROMPT).toMatch(/ONE new requirement|one requirement/i);
   });
 
-  it("kickoff embeds an existing definition and the queue", () => {
-    const p = kickoffPrompt("# My Project\nGoal: ship.", ["Which DB?"]);
+  it("kickoff embeds the repo scope, an existing definition, and the queue", () => {
+    const p = kickoffPrompt("apps/web", "# My Project\nGoal: ship.", ["Which DB?"]);
+    expect(p).toContain("'apps/web'");
+    expect(p).toMatch(/keep every code check inside 'apps\/web\/'/);
     expect(p).toContain("# My Project");
     expect(p).toContain("Which DB?");
     expect(p).toMatch(/Continue from it/);
   });
 
   it("kickoff without a definition asks to seed the skeleton first", () => {
-    const p = kickoffPrompt(null, []);
+    const p = kickoffPrompt(".", null, []);
+    expect(p).toMatch(/folder's root IS the git repo/);
     expect(p).toMatch(/seed the skeleton/);
     expect(p).toMatch(/queue is empty/);
   });

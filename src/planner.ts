@@ -1,16 +1,18 @@
-// The interview state machine. One interview per folder, stored in the plugin
-// document store; the planner session reports back through the MCP tools at
-// the bottom (session events are payload-slim, so tools are the only channel).
+// The interview state machine. One interview per GIT REPO (a folder can hold
+// several repos — the interview, its definition file, and its reset are all
+// repo-scoped). State lives in the plugin document store; the planner session
+// reports back through the MCP tools at the bottom (session events are
+// payload-slim, so tools are the only channel).
 
 import {
   callerScope,
   createSession,
   dispatchCapture,
+  hostCall,
   listModels,
   readFileOrNull,
   sessionEvents,
   sessionExists,
-  setSessionSystemPrompt,
   storeGet,
   storePut,
   writeFile,
@@ -19,6 +21,8 @@ import { DEFINITION_FILE, SYSTEM_PROMPT, answerPrompt, kickoffPrompt, stalledPro
 import { errMsg } from "./verdict";
 
 const COLLECTION = "planner";
+/** sessionId → {folder_id, repo}: how a tool call finds ITS interview. */
+const SESSIONS = "sessions";
 const EVENTS_PAGE_LIMIT = 200;
 /** Queue and history caps: the queue is re-shown to the agent every turn, so
  * an unbounded one would grow the very context the contract keeps small. */
@@ -29,6 +33,9 @@ const MAX_HISTORY = 200;
 const MAX_NUDGES = 2;
 /** Definition preview cap for the page (the file itself is not capped). */
 const MAX_DEFINITION_PREVIEW = 100_000;
+/** Repo-discovery caps: directories probed for a `.git/HEAD`. */
+const MAX_PROBE_DIRS = 400;
+const MAX_PROBE_DEPTH = 6;
 
 export interface SlideOption {
   label: string;
@@ -45,7 +52,7 @@ export interface Slide {
   multi: boolean;
   blank_hint: string | null;
   diagram: string | null;
-  /** The answer the folder's existing code supports, when the agent found
+  /** The answer the repo's existing code supports, when the agent found
    * one — the slide offers one-click confirmation and correction. */
   proposed_answer: string | null;
   /** One sentence naming where the code shows it; required with a proposal
@@ -95,13 +102,89 @@ export function emptyState(): PlannerState {
   };
 }
 
-export function loadState(folderId: string): PlannerState {
-  const raw = storeGet(COLLECTION, folderId);
+// ── Repo scoping ────────────────────────────────────────────────────────────
+
+/** Folder-relative repo path; `"."` = the folder root itself is the repo. */
+export function normalizeRepo(raw: unknown): string {
+  const r = (typeof raw === "string" ? raw : "").trim().replace(/^\.\//, "").replace(/\/+$/, "");
+  return r === "" ? "." : r;
+}
+
+/** Where the repo's definition file lives — INSIDE the repo, so it is
+ * committed with the code it describes. */
+export function definitionPath(repo: string): string {
+  return repo === "." ? DEFINITION_FILE : `${repo}/${DEFINITION_FILE}`;
+}
+
+function stateKey(folderId: string, repo: string): string {
+  return `${folderId}|${repo}`;
+}
+
+/** Branch behind a HEAD file (`ref: refs/heads/x` → `x`; detached → id8). */
+function headBranch(head: string): string {
+  const raw = head.trim();
+  const m = raw.match(/^ref: refs\/heads\/(.+)$/);
+  return m ? m[1] : raw.slice(0, 8);
+}
+
+/** Is `repo` actually a git repo in this folder? Returns its HEAD content. */
+function probeRepo(repo: string): string | null {
+  if (repo.includes("..")) return null; // the jail rejects it anyway
+  return readFileOrNull(repo === "." ? ".git/HEAD" : `${repo}/.git/HEAD`);
+}
+
+export interface RepoInfo {
+  path: string;
+  name: string;
+  branch: string;
+}
+
+/** Find the git repos in the caller's folder: unique directory prefixes of
+ * the jailed file walk, probed for `.git/HEAD` (the walk itself never
+ * descends into `.git`, so the probe is a direct read). Repos nested inside
+ * an already-found repo's tree are skipped, mirroring core's scan. */
+export function discoverRepos(): RepoInfo[] {
+  const listed = hostCall("peckboard_list_project_files", {});
+  const files: Array<{ path: string }> = listed?.files ?? [];
+  const dirs = new Set<string>([""]);
+  for (const f of files) {
+    const parts = f.path.split("/");
+    parts.pop();
+    for (let d = 1; d <= Math.min(parts.length, MAX_PROBE_DEPTH); d++) {
+      dirs.add(parts.slice(0, d).join("/"));
+      if (dirs.size > MAX_PROBE_DIRS) break;
+    }
+    if (dirs.size > MAX_PROBE_DIRS) break;
+  }
+  // Shallow-first so a parent repo claims its subtree before we probe it.
+  const ordered = [...dirs].sort(
+    (a, b) => a.split("/").length - b.split("/").length || a.localeCompare(b),
+  );
+  const repos: RepoInfo[] = [];
+  for (const dir of ordered) {
+    if (repos.some((r) => r.path !== "." && (dir === r.path || dir.startsWith(r.path + "/")))) {
+      continue; // inside an already-found repo
+    }
+    const head = probeRepo(dir === "" ? "." : dir);
+    if (head === null) continue;
+    const path = dir === "" ? "." : dir;
+    repos.push({
+      path,
+      name: path === "." ? "(folder root)" : path.split("/").pop() || path,
+      branch: headBranch(head),
+    });
+    if (path === ".") break; // the folder root repo owns the whole tree
+  }
+  return repos;
+}
+
+export function loadState(folderId: string, repo: string): PlannerState {
+  const raw = storeGet(COLLECTION, stateKey(folderId, repo));
   return raw ? { ...emptyState(), ...raw } : emptyState();
 }
 
-function saveState(folderId: string, state: PlannerState): void {
-  storePut(COLLECTION, folderId, state);
+function saveState(folderId: string, repo: string, state: PlannerState): void {
+  storePut(COLLECTION, stateKey(folderId, repo), state);
 }
 
 /** The folder this authed page request is scoped to, or a user-facing error. */
@@ -118,12 +201,28 @@ export function requireFolder(): string {
 
 // ── Page-facing operations (authed routes) ──────────────────────────────────
 
-/** What the slideshow renders. Also settles a stalled/vanished run. */
-export function pageState(folderId: string): any {
-  let state = loadState(folderId);
-  state = settleRun(folderId, state);
-  const definition = readFileOrNull(DEFINITION_FILE);
+/** The repo picker's data: every repo with its interview status. */
+export function repoList(folderId: string): any {
+  const repos = discoverRepos().map((r) => {
+    const st = loadState(folderId, r.path);
+    return {
+      ...r,
+      status: st.status,
+      answered: st.history.length,
+      definition_exists: readFileOrNull(definitionPath(r.path)) !== null,
+    };
+  });
+  return { repos };
+}
+
+/** What the slideshow renders for one repo. Also settles a stalled run. */
+export function pageState(folderId: string, repoRaw: unknown): any {
+  const repo = normalizeRepo(repoRaw);
+  let state = loadState(folderId, repo);
+  state = settleRun(folderId, repo, state);
+  const definition = readFileOrNull(definitionPath(repo));
   return {
+    repo,
     status: state.status,
     slide: state.slide,
     history: state.history.map((h) => ({ topic: h.topic, note: h.note })),
@@ -140,7 +239,7 @@ export function pageState(folderId: string): any {
         : definition.length > MAX_DEFINITION_PREVIEW
           ? definition.slice(0, MAX_DEFINITION_PREVIEW)
           : definition,
-    definition_file: DEFINITION_FILE,
+    definition_file: definitionPath(repo),
     // Model picker for the start slide; tiers ascend in capability.
     models:
       state.status === "idle"
@@ -149,21 +248,25 @@ export function pageState(folderId: string): any {
   };
 }
 
-/** Start (or restart) the interview: temp session + kickoff dispatch. */
-export function start(folderId: string, modelId: string): any {
+/** Start (or restart) the interview for one repo. */
+export function start(folderId: string, repoRaw: unknown, modelId: string): any {
+  const repo = normalizeRepo(repoRaw);
   if (typeof modelId !== "string" || !modelId) {
     throw new Error("pick a model first");
   }
-  const prior = loadState(folderId);
+  if (probeRepo(repo) === null) {
+    throw new Error(`'${repo}' is not a git repo in this folder — pick one from the repo list`);
+  }
+  const prior = loadState(folderId, repo);
   if (prior.status === "thinking" || prior.status === "waiting") {
-    throw new Error("an interview is already running for this folder — reset it first");
+    throw new Error("an interview is already running for this repo — reset it first");
   }
 
-  const definition = readFileOrNull(DEFINITION_FILE);
+  const definition = readFileOrNull(definitionPath(repo));
   let sessionId: string;
   try {
     sessionId = createSession({
-      name: "Project Planner interview",
+      name: `Project Planner interview — ${repo === "." ? "folder root" : repo}`,
       model: modelId,
       is_temp: true,
       system_prompt: SYSTEM_PROMPT,
@@ -177,17 +280,16 @@ export function start(folderId: string, modelId: string): any {
     status: "thinking",
     session_id: sessionId,
     model: modelId,
-    // A previous run's queue survives reset-less restarts via the definition
-    // file only; the in-store queue restarts clean with the interview.
-    pending: [],
     started_at: new Date().toISOString(),
   };
-  saveState(folderId, state);
+  saveState(folderId, repo, state);
+  // How toolAsk & co. find their interview: the calling session's id.
+  storePut(SESSIONS, sessionId, { folder_id: folderId, repo });
 
   try {
-    dispatchCapture(sessionId, kickoffPrompt(definition, state.pending));
+    dispatchCapture(sessionId, kickoffPrompt(repo, definition, state.pending));
   } catch (e) {
-    saveState(folderId, {
+    saveState(folderId, repo, {
       ...state,
       status: "failed",
       error: `the planner session was created but the first prompt could not be dispatched: ${errMsg(e)}`,
@@ -197,9 +299,10 @@ export function start(folderId: string, modelId: string): any {
   return { ok: true };
 }
 
-/** The user answered the current slide. */
-export function answer(folderId: string, answerText: string): any {
-  const state = loadState(folderId);
+/** The user answered the current slide of one repo's interview. */
+export function answer(folderId: string, repoRaw: unknown, answerText: string): any {
+  const repo = normalizeRepo(repoRaw);
+  const state = loadState(folderId, repo);
   if (state.status !== "waiting" || !state.slide || !state.session_id) {
     throw new Error("there is no question waiting for an answer");
   }
@@ -219,7 +322,7 @@ export function answer(folderId: string, answerText: string): any {
       { topic: asked.topic, question: asked.question, answer: text, note: null },
     ].slice(-MAX_HISTORY),
   };
-  saveState(folderId, next);
+  saveState(folderId, repo, next);
 
   try {
     dispatchCapture(
@@ -227,12 +330,12 @@ export function answer(folderId: string, answerText: string): any {
       answerPrompt({
         question: asked.question,
         answer: text,
-        definition: readFileOrNull(DEFINITION_FILE),
+        definition: readFileOrNull(definitionPath(repo)),
         pending: next.pending,
       }),
     );
   } catch (e) {
-    saveState(folderId, {
+    saveState(folderId, repo, {
       ...next,
       status: "failed",
       error: `the answer could not be dispatched to the planner session: ${errMsg(e)}`,
@@ -242,9 +345,9 @@ export function answer(folderId: string, answerText: string): any {
   return { ok: true };
 }
 
-/** Drop the interview state (the definition file stays). */
-export function reset(folderId: string): any {
-  saveState(folderId, emptyState());
+/** Drop one repo's interview state (its definition file stays). */
+export function reset(folderId: string, repoRaw: unknown): any {
+  saveState(folderId, normalizeRepo(repoRaw), emptyState());
   return { ok: true };
 }
 
@@ -252,7 +355,7 @@ export function reset(folderId: string): any {
  * asking gets nudged (the model forgot the tool), then fails; a session that
  * vanished fails immediately. Tool calls flip the status before this runs, so
  * a healthy run never trips it. */
-function settleRun(folderId: string, state: PlannerState): PlannerState {
+function settleRun(folderId: string, repo: string, state: PlannerState): PlannerState {
   if (state.status !== "thinking" || !state.session_id) {
     return state;
   }
@@ -274,7 +377,7 @@ function settleRun(folderId: string, state: PlannerState): PlannerState {
 
   let next = { ...state, last_seq: lastSeq };
   // Re-read: an ask/write tool call may have landed while we polled.
-  const fresh = loadState(folderId);
+  const fresh = loadState(folderId, repo);
   if (fresh.status !== "thinking") {
     return fresh;
   }
@@ -303,22 +406,23 @@ function settleRun(folderId: string, state: PlannerState): PlannerState {
   }
 
   if (JSON.stringify(next) !== JSON.stringify(state)) {
-    saveState(folderId, next);
+    saveState(folderId, repo, next);
   }
   return next;
 }
 
 // ── Agent-facing tools (mcp.tool.invoke) ────────────────────────────────────
 
-/** Guard: tools only accept calls from the folder's own planner session, so a
- * stray agent in the same folder can't hijack the slideshow.
+/** Guard: a tool call is resolved to ITS interview via the calling session's
+ * id (recorded at start), so only the repo's own planner session can drive
+ * its slideshow.
  *
  * The invoke context arrives CAMEL-CASE from core (`routes/mcp.rs` →
  * `dispatch_tool_call` builds `{sessionId, projectId, cardId, folderId}`);
  * the snake_case forms are accepted too in case that shape ever changes.
  * Reading the wrong casing here is exactly the 0.1.0 bug that made every
  * tool call fail with "no folder scope" and the interview never wait. */
-function plannerStateFor(context: any): { folderId: string; state: PlannerState } {
+function plannerStateFor(context: any): { folderId: string; repo: string; state: PlannerState } {
   const pick = (...vals: unknown[]): string | null => {
     for (const v of vals) {
       if (typeof v === "string" && v) return v;
@@ -326,18 +430,25 @@ function plannerStateFor(context: any): { folderId: string; state: PlannerState 
     return null;
   };
   const folderId = pick(context?.folderId, context?.folder_id);
-  if (!folderId) {
+  const caller = pick(context?.sessionId, context?.session_id);
+  if (!folderId || !caller) {
     throw new Error("this tool only works from a session inside a workspace folder");
   }
-  const state = loadState(folderId);
-  const caller = pick(context?.sessionId, context?.session_id);
-  if (!state.session_id || caller !== state.session_id) {
+  const mapping = storeGet(SESSIONS, caller);
+  const repo = typeof mapping?.repo === "string" ? mapping.repo : null;
+  if (!repo || mapping?.folder_id !== folderId) {
     throw new Error(
       "this tool is reserved for the Project Planner interview session — start an interview " +
         "from the Project Planner page",
     );
   }
-  return { folderId, state };
+  const state = loadState(folderId, repo);
+  if (state.session_id !== caller) {
+    throw new Error(
+      "this interview was reset or restarted — this session no longer drives it",
+    );
+  }
+  return { folderId, repo, state };
 }
 
 function asString(v: unknown): string {
@@ -346,7 +457,7 @@ function asString(v: unknown): string {
 
 /** project_planner_ask — validate and publish the next slide. */
 export function toolAsk(args: any, context: any): any {
-  const { folderId, state } = plannerStateFor(context);
+  const { folderId, repo, state } = plannerStateFor(context);
   // One slide at a time IS the product: a second ask before the user answered
   // would silently replace the showing slide and the interview would stop
   // waiting for answers. Refuse so the model ends its turn instead.
@@ -406,7 +517,7 @@ export function toolAsk(args: any, context: any): any {
     proposed_answer: proposedAnswer,
     evidence: proposedAnswer ? evidence : null,
   };
-  storePut(COLLECTION, folderId, { ...state, status: "waiting", slide, nudges: 0 });
+  saveState(folderId, repo, { ...state, status: "waiting", slide, nudges: 0 });
   return {
     ok: true,
     note: "The slide is showing. End your turn now — the user's answer arrives as the next message.",
@@ -415,7 +526,7 @@ export function toolAsk(args: any, context: any): any {
 
 /** project_planner_queue — add/remove pending follow-ups. */
 export function toolQueue(args: any, context: any): any {
-  const { folderId, state } = plannerStateFor(context);
+  const { folderId, repo, state } = plannerStateFor(context);
   const add = (Array.isArray(args?.add) ? args.add : []).map(asString).filter(Boolean);
   const remove = new Set((Array.isArray(args?.remove) ? args.remove : []).map(asString));
   let pending = state.pending.filter((q) => !remove.has(q));
@@ -424,7 +535,7 @@ export function toolQueue(args: any, context: any): any {
   }
   const dropped = Math.max(0, pending.length - MAX_PENDING);
   pending = pending.slice(0, MAX_PENDING);
-  storePut(COLLECTION, folderId, { ...state, pending });
+  saveState(folderId, repo, { ...state, pending });
   return {
     ok: true,
     pending,
@@ -432,31 +543,32 @@ export function toolQueue(args: any, context: any): any {
   };
 }
 
-/** project_planner_write_definition — persist the definition file. */
+/** project_planner_write_definition — persist the repo's definition file. */
 export function toolWriteDefinition(args: any, context: any): any {
-  const { folderId, state } = plannerStateFor(context);
+  const { folderId, repo, state } = plannerStateFor(context);
   const markdown = typeof args?.markdown === "string" ? args.markdown : "";
   if (!markdown.trim()) {
     return { error: "markdown is required — the complete new definition file content" };
   }
-  writeFile(DEFINITION_FILE, markdown.endsWith("\n") ? markdown : markdown + "\n");
+  const path = definitionPath(repo);
+  writeFile(path, markdown.endsWith("\n") ? markdown : markdown + "\n");
   const note = asString(args?.note) || null;
   const history = state.history.slice();
   // The note describes what the just-answered question changed — pin it there.
   if (note && history.length && history[history.length - 1].note === null) {
     history[history.length - 1] = { ...history[history.length - 1], note };
   }
-  storePut(COLLECTION, folderId, { ...state, history, last_note: note ?? state.last_note });
-  return { ok: true, path: DEFINITION_FILE };
+  saveState(folderId, repo, { ...state, history, last_note: note ?? state.last_note });
+  return { ok: true, path };
 }
 
 /** project_planner_finish — completion slide. */
 export function toolFinish(args: any, context: any): any {
-  const { folderId, state } = plannerStateFor(context);
+  const { folderId, repo, state } = plannerStateFor(context);
   const summary = asString(args?.summary);
   if (!summary) {
     return { error: "summary is required — two or three sentences on what the definition pins down" };
   }
-  storePut(COLLECTION, folderId, { ...state, status: "done", slide: null, summary });
+  saveState(folderId, repo, { ...state, status: "done", slide: null, summary });
   return { ok: true, note: "The interview is complete; the user sees your summary." };
 }

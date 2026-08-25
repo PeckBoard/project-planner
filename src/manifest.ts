@@ -3,13 +3,16 @@
 // authenticated data routes.
 
 const DESCRIPTION =
-  "Project Planner: build a project definition file by interview. A slideshow " +
-  "asks one pointed question per slide — fill-in-the-blank or multiple choice " +
-  "with every option justified, plus small diagrams — generated one after " +
-  "another by a dedicated agent session. Each answer is written into " +
-  "PROJECT_DEFINITION.md at the folder root as a requirement; an existing " +
-  "definition is read first and the interview continues from it.";
-const VERSION = "0.1.4";
+  "Project Planner: build a project definition file by interview, per git " +
+  "repo. Pick a repo (a folder can hold several); a slideshow then asks one " +
+  "pointed question per slide — fill-in-the-blank or multiple choice with " +
+  "every option justified, plus small diagrams — generated one after another " +
+  "by a dedicated agent session. When the repo's code already answers a " +
+  "question, the slide proposes that answer with evidence for one-click " +
+  "confirmation. Each answer is written into the repo's PROJECT_DEFINITION.md " +
+  "as a requirement; an existing definition is read first and the interview " +
+  "continues from it. Each repo's interview resets independently.";
+const VERSION = "0.2.0";
 
 const REPOSITORY = "https://github.com/peckboard/project-planner";
 // Inline SVG (lucide "clipboard-list") for the page items; rendered sandboxed.
@@ -60,6 +63,7 @@ export function manifestJson(): string {
     http_routes: ["GET /plugin-api/v1/project-planner"],
 
     ui_routes: [
+      "GET /api/plugin-ui/project-planner/repos",
       "GET /api/plugin-ui/project-planner/state",
       "POST /api/plugin-ui/project-planner/start",
       "POST /api/plugin-ui/project-planner/answer",

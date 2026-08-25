@@ -170,6 +170,34 @@ let chosen = new Set(); // selected option labels
 let otherText = "";
 let submitting = false;
 let pollTimer = null;
+// Interviews are repo-scoped: a folder can hold several git repos, each with
+// its own definition file, interview, and reset. `currentRepo` is the
+// folder-relative path ('.' = the folder root); null shows the picker.
+let repos = null; // last /repos payload (list), or null before the first load
+let currentRepo = null;
+// sessionStorage THROWS in this sandboxed iframe (opaque origin, no
+// allow-same-origin) — remembering the picked repo is best-effort only.
+function remember(k, v) {
+  try {
+    sessionStorage.setItem(k, v);
+  } catch (_e) {
+    /* opaque origin — selection lives for this page load only */
+  }
+}
+function recall(k) {
+  try {
+    return sessionStorage.getItem(k);
+  } catch (_e) {
+    return null;
+  }
+}
+function forget(k) {
+  try {
+    sessionStorage.removeItem(k);
+  } catch (_e) {
+    /* nothing to forget */
+  }
+}
 
 // Live reference into the mounted generating screen, so polls can update the
 // real definition-change note without rebuilding the DOM (a rebuild restarts
@@ -186,7 +214,25 @@ function schedulePoll() {
 
 async function refresh() {
   try {
-    const next = await getJSON(P + "/state");
+    if (repos === null) {
+      repos = (await getJSON(P + "/repos")).repos || [];
+      const remembered = recall("planner-repo");
+      if (currentRepo === null) {
+        if (repos.length === 1) currentRepo = repos[0].path;
+        else if (remembered && repos.some((r) => r.path === remembered)) currentRepo = remembered;
+      }
+    }
+    if (currentRepo === null) {
+      // No repo picked yet — keep the picker fresh, re-render only on change.
+      const next = (await getJSON(P + "/repos")).repos || [];
+      const changed = JSON.stringify(next) !== JSON.stringify(repos) || !state || state.status !== "pick-repo";
+      repos = next;
+      state = { status: "pick-repo" };
+      if (changed) render();
+      schedulePoll();
+      return;
+    }
+    const next = await getJSON(P + "/state?repo=" + encodeURIComponent(currentRepo));
     const slideChanged =
       (next.slide ? next.slide.slide_no : -1) !== (state && state.slide ? state.slide.slide_no : -1);
     const statusChanged = !state || state.status !== next.status;
@@ -207,6 +253,25 @@ async function refresh() {
   schedulePoll();
 }
 
+function selectRepo(path) {
+  currentRepo = path;
+  remember("planner-repo", path);
+  state = null;
+  showDefinition = false;
+  render();
+  refresh();
+}
+
+function switchRepo() {
+  currentRepo = null;
+  forget("planner-repo");
+  state = null;
+  repos = null;
+  showDefinition = false;
+  render();
+  refresh();
+}
+
 // ── screens ──────────────────────────────────────────────────────────────────
 
 function render() {
@@ -222,8 +287,12 @@ function render() {
     return;
   }
   switch (state.status) {
+    case "pick-repo":
+      inner.appendChild(repoPickerScreen());
+      break;
     case "idle":
       inner.appendChild(startScreen());
+      break;
       break;
     case "thinking":
       inner.appendChild(trail(true));
@@ -253,7 +322,16 @@ function topbar() {
   brand.appendChild(bi);
   brand.appendChild(el("span", "", "Project Planner"));
   bar.appendChild(brand);
+  if (currentRepo !== null) {
+    const info = (repos || []).find((r) => r.path === currentRepo);
+    bar.appendChild(el("span", "repo-chip", info ? info.name : currentRepo));
+  }
   bar.appendChild(el("div", "topbar-spacer"));
+  if (currentRepo !== null) {
+    const back = el("button", "ghost-btn", "Switch repo");
+    back.onclick = switchRepo;
+    bar.appendChild(back);
+  }
   if (state && state.definition_exists) {
     bar.appendChild(el("span", "file-chip", state.definition_file || "PROJECT_DEFINITION.md"));
     const toggle = el("button", "ghost-btn", showDefinition ? "Hide definition" : "View definition");
@@ -263,11 +341,18 @@ function topbar() {
     };
     bar.appendChild(toggle);
   }
-  if (state && (state.status === "waiting" || state.status === "thinking" || state.status === "failed")) {
+  if (
+    currentRepo !== null &&
+    state &&
+    (state.status === "waiting" ||
+      state.status === "thinking" ||
+      state.status === "failed" ||
+      state.status === "done")
+  ) {
     const stop = el("button", "ghost-btn", "Start over");
     stop.onclick = async () => {
       try {
-        await postJSON(P + "/reset");
+        await postJSON(P + "/reset", { repo: currentRepo });
         showDefinition = false;
         await refresh();
       } catch (_e) {
@@ -277,6 +362,66 @@ function topbar() {
     bar.appendChild(stop);
   }
   return bar;
+}
+
+/** Human status line for a repo row on the picker. */
+function repoStatusLabel(r) {
+  switch (r.status) {
+    case "waiting":
+      return "waiting for your answer";
+    case "thinking":
+      return "generating a question";
+    case "done":
+      return "complete";
+    case "failed":
+      return "stopped — reset to retry";
+    default:
+      return r.definition_exists ? "definition on disk — not started" : "not started";
+  }
+}
+
+/** One interview per git repo: the folder holds several, so pick one. */
+function repoPickerScreen() {
+  const card = el("div", "card");
+  const head = el("div", "center");
+  const hero = el("div", "hero-icon");
+  hero.appendChild(icon(ICON_CLIPBOARD));
+  head.appendChild(hero);
+  head.appendChild(el("h1", "", "Pick a repository"));
+  head.appendChild(
+    el(
+      "p",
+      "copy",
+      (repos || []).length
+        ? "Each git repo in this folder gets its own definition file and its own interview."
+        : "No git repositories were found in this folder or its subfolders.",
+    ),
+  );
+  card.appendChild(head);
+  const list = el("div", "repo-list");
+  for (const r of repos || []) {
+    const row = el("button", "repo-row");
+    row.type = "button";
+    const body = el("div", "repo-row-body");
+    const title = el("div", "repo-row-name", r.name);
+    title.appendChild(el("span", "repo-branch", r.branch));
+    body.appendChild(title);
+    body.appendChild(
+      el(
+        "div",
+        "repo-row-meta",
+        (r.path === "." ? "" : r.path + " · ") +
+          repoStatusLabel(r) +
+          (r.answered ? " · " + r.answered + " answered" : ""),
+      ),
+    );
+    row.appendChild(body);
+    row.appendChild(el("span", "repo-row-go", "›"));
+    row.onclick = () => selectRepo(r.path);
+    list.appendChild(row);
+  }
+  card.appendChild(list);
+  return card;
 }
 
 function trail(thinking) {
@@ -362,7 +507,7 @@ function startScreen() {
     btn.disabled = true;
     btn.textContent = "Starting…";
     try {
-      await postJSON(P + "/start", { model: select.value });
+      await postJSON(P + "/start", { repo: currentRepo, model: select.value });
       await refresh();
     } catch (e) {
       err.textContent = e.message;
@@ -465,7 +610,7 @@ function slideScreen() {
     btn.disabled = true;
     btn.textContent = busyLabel;
     try {
-      await postJSON(P + "/answer", { answer: answerText });
+      await postJSON(P + "/answer", { repo: currentRepo, answer: answerText });
       chosen = new Set();
       otherText = "";
       await refresh();
@@ -652,7 +797,7 @@ function doneScreen() {
   const btn = el("button", "primary-btn", "Run another pass");
   btn.onclick = async () => {
     try {
-      await postJSON(P + "/reset");
+      await postJSON(P + "/reset", { repo: currentRepo });
       showDefinition = false;
       await refresh();
     } catch (_e) {
@@ -676,7 +821,7 @@ function failedScreen(message) {
   const btn = el("button", "primary-btn", "Reset and start again");
   btn.onclick = async () => {
     try {
-      await postJSON(P + "/reset");
+      await postJSON(P + "/reset", { repo: currentRepo });
       await refresh();
     } catch (_e) {
       /* surfaced on next poll */

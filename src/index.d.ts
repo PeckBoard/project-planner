@@ -30,5 +30,6 @@ declare module "extism:host" {
     peckboard_set_session_system_prompt(ptr: I64): I64;
     peckboard_read_file(ptr: I64): I64;
     peckboard_write_file(ptr: I64): I64;
+    peckboard_list_project_files(ptr: I64): I64;
   }
 }

@@ -9,7 +9,7 @@
 
 export const DEFINITION_FILE = "PROJECT_DEFINITION.md";
 
-export const SYSTEM_PROMPT = `You are the Project Planner: an interviewer that builds ${DEFINITION_FILE} for this folder's project, one question at a time.
+export const SYSTEM_PROMPT = `You are the Project Planner: an interviewer that builds a ${DEFINITION_FILE} for ONE git repository, one question at a time. The kickoff message names the repo (a path inside this folder — a folder can hold several repos); everything you do — code checks, the definition file, the questions — stays scoped to that repo.
 
 How you talk to the user: ONLY through the project_planner_ask tool. The user sees a slideshow, not this chat — text you write outside tools reaches nobody. One call shows one slide with exactly one question; after calling it, end your turn and wait. The answer arrives as the next message.
 
@@ -39,16 +39,21 @@ After every answer:
 
 Keep yourself small: the current definition and queue arrive with every message, so never re-read the definition from disk, and keep any code checks to the short, targeted reads described above. Do not summarize progress in chat. Never ask the user anything through any other mechanism.`;
 
-/** First dispatch of a run. `definition` is the existing file's content, or
- * null when none exists yet. */
-export function kickoffPrompt(definition: string | null, pending: string[]): string {
+/** First dispatch of a run, scoped to one repo. `definition` is the existing
+ * file's content, or null when none exists yet. */
+export function kickoffPrompt(repo: string, definition: string | null, pending: string[]): string {
+  const where =
+    repo === "."
+      ? "This folder's root IS the git repo you are planning."
+      : `The git repo you are planning lives at '${repo}' inside this folder — the folder holds more than this repo, so keep every code check inside '${repo}/' and ignore the rest.`;
+  const defFile = repo === "." ? DEFINITION_FILE : `${repo}/${DEFINITION_FILE}`;
   const defPart = definition
-    ? `The folder already has ${DEFINITION_FILE}. Its current content is between the markers:\n<<<DEFINITION\n${definition}\nDEFINITION>>>\nContinue from it: fill gaps and firm up vague requirements instead of re-asking what it already answers.`
-    : `The folder has no ${DEFINITION_FILE} yet. First call project_planner_write_definition to seed the skeleton (the headings, each empty), then ask your first question — the project's purpose.`;
+    ? `The repo already has ${defFile}. Its current content is between the markers:\n<<<DEFINITION\n${definition}\nDEFINITION>>>\nContinue from it: fill gaps and firm up vague requirements instead of re-asking what it already answers.`
+    : `The repo has no ${defFile} yet. First call project_planner_write_definition to seed the skeleton (the headings, each empty), then ask your first question — the project's purpose. (The tool writes the file into the repo for you — never write it by any other means.)`;
   const queuePart = pending.length
     ? `Pending question queue from a previous run:\n${pending.map((q) => `- ${q}`).join("\n")}`
     : "The pending question queue is empty.";
-  return `${defPart}\n\n${queuePart}\n\nBegin the interview now: one slide, one pointed question, via project_planner_ask.`;
+  return `${where}\n\n${defPart}\n\n${queuePart}\n\nBegin the interview now: one slide, one pointed question, via project_planner_ask.`;
 }
 
 /** Dispatch after the user answers a slide. */
