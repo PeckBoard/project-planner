@@ -12,7 +12,7 @@ const DESCRIPTION =
   "confirmation. Each answer is written into the repo's PROJECT_DEFINITION.md " +
   "as a requirement; an existing definition is read first and the interview " +
   "continues from it. Each repo's interview resets independently.";
-const VERSION = "0.2.1";
+const VERSION = "0.2.2";
 
 const REPOSITORY = "https://github.com/peckboard/project-planner";
 // Inline SVG (lucide "clipboard-list") for the page items; rendered sandboxed.

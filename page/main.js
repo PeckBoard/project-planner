@@ -750,8 +750,21 @@ function optionCard(slide, option, onChange) {
 }
 
 function otherCard(slide, onChange) {
-  const btn = el("button", "option" + (slide.multi ? " multi-mark" : ""));
-  btn.type = "button";
+  // Not a <button>: a native button's Space/Enter activation is a default
+  // action that fires even when the nested input stops key propagation, so
+  // typing a space into the answer field would toggle the option off and
+  // hide the input mid-word. A div[role=button] has no default activation;
+  // keyboard toggling is handled below only when the card itself has focus.
+  const btn = el("div", "option" + (slide.multi ? " multi-mark" : ""));
+  btn.setAttribute("role", "button");
+  btn.tabIndex = 0;
+  btn.onkeydown = (e) => {
+    if (e.target !== btn) return;
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      btn.click();
+    }
+  };
   const mark = el("span", "option-mark");
   mark.appendChild(icon(ICON_CHECK));
   btn.appendChild(mark);
