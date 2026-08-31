@@ -503,6 +503,16 @@ function startScreen() {
   row.appendChild(select);
   card.appendChild(row);
 
+  // Optional steer: a freeform starting topic the interview digs into first.
+  const topicRow = el("div", "model-row");
+  const topicInput = el("input", "topic-input");
+  topicInput.type = "text";
+  topicInput.maxLength = 200;
+  topicInput.placeholder = "Start with a topic (optional) — e.g. game rules";
+  topicInput.setAttribute("aria-label", "Optional starting topic for the interview");
+  topicRow.appendChild(topicInput);
+  card.appendChild(topicRow);
+
   const err = el("div", "error-box");
   err.style.display = "none";
   card.appendChild(err);
@@ -513,7 +523,11 @@ function startScreen() {
     btn.disabled = true;
     btn.textContent = "Starting…";
     try {
-      await postJSON(P + "/start", { repo: currentRepo, model: select.value });
+      await postJSON(P + "/start", {
+        repo: currentRepo,
+        model: select.value,
+        topic: topicInput.value.trim(),
+      });
       await refresh();
     } catch (e) {
       err.textContent = e.message;

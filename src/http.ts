@@ -69,7 +69,7 @@ export function serveAuthed(payload: any): string {
     }
     if (method === "POST" && path === `${API}/start`) {
       const b = parseBody(body);
-      return jsonResponse(200, start(folderId, b?.repo, str(b?.model)));
+      return jsonResponse(200, start(folderId, b?.repo, str(b?.model), b?.topic));
     }
     if (method === "POST" && path === `${API}/answer`) {
       const b = parseBody(body);

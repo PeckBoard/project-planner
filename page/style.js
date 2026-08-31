@@ -355,6 +355,16 @@ body {
   color: var(--text);
   font: inherit;
 }
+.topic-input {
+  min-width: 260px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1.5px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+}
+.topic-input::placeholder { color: var(--text-3); }
 
 .dots { display: inline-flex; gap: 7px; margin: 8px 0 14px; }
 .dots i {

@@ -42,6 +42,17 @@ describe("planner contract", () => {
     expect(p).toMatch(/queue is empty/);
   });
 
+  it("kickoff with a starting topic steers the interview there", () => {
+    const p = kickoffPrompt(".", null, [], "game rules");
+    expect(p).toContain('starting topic for this interview: "game rules"');
+    expect(p).toMatch(/focus your questions on this topic/);
+  });
+
+  it("kickoff without a topic carries no steer paragraph", () => {
+    const p = kickoffPrompt(".", null, []);
+    expect(p).not.toContain("starting topic");
+  });
+
   it("answer prompt carries question, answer, definition, and queue", () => {
     const p = answerPrompt({
       question: "What is the goal?",

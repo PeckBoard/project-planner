@@ -249,7 +249,12 @@ export function pageState(folderId: string, repoRaw: unknown): any {
 }
 
 /** Start (or restart) the interview for one repo. */
-export function start(folderId: string, repoRaw: unknown, modelId: string): any {
+export function start(
+  folderId: string,
+  repoRaw: unknown,
+  modelId: string,
+  topicRaw?: unknown,
+): any {
   const repo = normalizeRepo(repoRaw);
   if (typeof modelId !== "string" || !modelId) {
     throw new Error("pick a model first");
@@ -286,8 +291,9 @@ export function start(folderId: string, repoRaw: unknown, modelId: string): any 
   // How toolAsk & co. find their interview: the calling session's id.
   storePut(SESSIONS, sessionId, { folder_id: folderId, repo });
 
+  const topic = typeof topicRaw === "string" ? topicRaw.trim().slice(0, 200) : "";
   try {
-    dispatchCapture(sessionId, kickoffPrompt(repo, definition, state.pending));
+    dispatchCapture(sessionId, kickoffPrompt(repo, definition, state.pending, topic || null));
   } catch (e) {
     saveState(folderId, repo, {
       ...state,
