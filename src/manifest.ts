@@ -12,7 +12,11 @@ const DESCRIPTION =
   "confirmation. Each answer is written into the repo's PROJECT_DEFINITION.md " +
   "as a requirement; an existing definition is read first and the interview " +
   "continues from it. Each repo's interview resets independently.";
-const VERSION = "0.2.2";
+// Single source of truth for the version: package.json. Bundled in by
+// esbuild/vitest (resolveJsonModule) — never hardcode a version string here;
+// a manifest that self-reports an old version makes the registry's
+// "upgrade available" chip permanent (0.3.0 shipped that way).
+import { version as VERSION } from "../package.json";
 
 const REPOSITORY = "https://github.com/peckboard/project-planner";
 // Inline SVG (lucide "clipboard-list") for the page items; rendered sandboxed.

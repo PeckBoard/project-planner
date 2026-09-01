@@ -51,3 +51,13 @@ describe("manifest", () => {
     expect(ask.input_schema.properties.kind.enum).toEqual(["choice", "fill"]);
   });
 });
+
+// The registry compares its version against what the LOADED wasm manifest
+// reports. If the manifest lags package.json, every upgrade "succeeds" but
+// the upgrade-available chip never clears (happened with 0.3.0).
+describe("manifest version source", () => {
+  it("matches package.json exactly", async () => {
+    const pkg = await import("../package.json");
+    expect(manifest.version).toBe(pkg.version);
+  });
+});
