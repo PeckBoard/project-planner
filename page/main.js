@@ -504,14 +504,19 @@ function startScreen() {
   card.appendChild(row);
 
   // Optional steer: a freeform starting topic the interview digs into first.
+  // Left blank, the planner's first slide proposes topics generated from the
+  // existing definition instead.
   const topicRow = el("div", "model-row");
   const topicInput = el("input", "topic-input");
   topicInput.type = "text";
   topicInput.maxLength = 200;
-  topicInput.placeholder = "Start with a topic (optional) — e.g. game rules";
+  topicInput.placeholder = "Start with a topic (optional)";
   topicInput.setAttribute("aria-label", "Optional starting topic for the interview");
   topicRow.appendChild(topicInput);
   card.appendChild(topicRow);
+  card.appendChild(
+    el("div", "topic-hint", "Leave it blank and the planner proposes topics from your definition."),
+  );
 
   const err = el("div", "error-box");
   err.style.display = "none";

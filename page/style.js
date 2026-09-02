@@ -365,6 +365,11 @@ body {
   font: inherit;
 }
 .topic-input::placeholder { color: var(--text-3); }
+.topic-hint {
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--text-3);
+}
 
 .dots { display: inline-flex; gap: 7px; margin: 8px 0 14px; }
 .dots i {

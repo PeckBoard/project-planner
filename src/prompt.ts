@@ -41,7 +41,9 @@ Keep yourself small: the current definition and queue arrive with every message,
 
 /** First dispatch of a run, scoped to one repo. `definition` is the existing
  * file's content, or null when none exists yet. `topic` is an optional
- * user-chosen starting topic steering where the interview digs first. */
+ * user-chosen starting topic steering where the interview digs first; when
+ * absent, the kickoff instructs the agent to open with a topic-choice slide
+ * whose options it generates from the definition. */
 export function kickoffPrompt(
   repo: string,
   definition: string | null,
@@ -61,9 +63,8 @@ export function kickoffPrompt(
     : "The pending question queue is empty.";
   const topicPart = topic
     ? `The user chose a starting topic for this interview: "${topic}". Steer there: once purpose and goal are on record (capture them first, briefly, if the definition still lacks them), focus your questions on this topic and stay on it until it is pinned down before moving on to anything else.`
-    : null;
-  const parts = [where, defPart, queuePart];
-  if (topicPart) parts.push(topicPart);
+    : `No starting topic was chosen, so ask for one: once purpose and goal are on record (capture them first, briefly, if the definition still lacks them), your next slide is a topic slide — kind "choice", asking which topic this pass should dig into. Generate 3 to 5 candidate topics from the definition and what the code shows: thin or empty sections, entries under Open Questions, stated goals with no requirements behind them. Topics are short product areas — the flavor of "game rules", "game mechanics", "user controls", "permission system", "authentication system", "site branding" — but generate ones that fit THIS project, not those examples. Each option's justification says why that area needs pinning down now; the slide's free-text option already lets the user type a different topic instead. Then steer to the chosen topic: focus your questions on it and stay on it until it is pinned down before moving on to anything else.`;
+  const parts = [where, defPart, queuePart, topicPart];
   parts.push("Begin the interview now: one slide, one pointed question, via project_planner_ask.");
   return parts.join("\n\n");
 }

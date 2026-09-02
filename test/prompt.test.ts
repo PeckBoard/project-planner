@@ -46,13 +46,16 @@ describe("planner contract", () => {
     const p = kickoffPrompt(".", null, [], "game rules");
     expect(p).toContain('starting topic for this interview: "game rules"');
     expect(p).toMatch(/focus your questions on this topic/);
+    expect(p).not.toContain("topic slide");
   });
 
-  it("kickoff without a topic carries no steer paragraph", () => {
+  it("kickoff without a topic asks for one via a generated topic-choice slide", () => {
     const p = kickoffPrompt(".", null, []);
-    expect(p).not.toContain("starting topic");
+    expect(p).toMatch(/No starting topic was chosen, so ask for one/);
+    expect(p).toMatch(/topic slide — kind "choice"/);
+    expect(p).toMatch(/Generate 3 to 5 candidate topics from the definition/);
+    expect(p).toMatch(/type a different topic/);
   });
-
   it("answer prompt carries question, answer, definition, and queue", () => {
     const p = answerPrompt({
       question: "What is the goal?",

@@ -47,6 +47,10 @@ The session's system prompt (`src/prompt.ts`) pins:
   one requirement added or amended.
 - An existing `PROJECT_DEFINITION.md` is read into the kickoff prompt and the
   interview continues from it.
+- Every pass starts on a topic: a topic typed on the start slide steers the
+  kickoff directly; left blank, the agent's first slide (after purpose/goal
+  exist) is a choice slide offering 3–5 topics it generates from the
+  definition — thin sections, open questions — with free text as the escape.
 - Context stays small: definition + queue arrive with every message, so the
   session never re-reads files or explores the repo.
 
