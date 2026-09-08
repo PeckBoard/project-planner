@@ -211,7 +211,7 @@ describe("project_planner_ask", () => {
 });
 
 describe("answer", () => {
-  it("appends history and dispatches the answer prompt with a context wipe", () => {
+  it("record turn: appends history and dispatches the answer WITHOUT a wipe", () => {
     runningState(docs);
     toolAsk({ topic: "Purpose", kind: "fill", question: "The project is for ___", why: "W." }, ctx);
     (docs.docs[KEY] as any).last_seq = 42; // pretend settleRun already read an event tail
@@ -219,13 +219,72 @@ describe("answer", () => {
     answer(FOLDER, REPO, "selling hats");
     const st = docs.docs[KEY] as any;
     expect(st.status).toBe("thinking");
+    expect(st.stage).toBe("record");
     expect(st.history[0].answer).toBe("selling hats");
+    // No wipe on this dispatch — the record turn keeps the context the
+    // question was asked in, so the model can fold the answer in properly.
+    expect(st.last_seq).toBe(42);
+    const dispatch = hostCalls.find((c) => c.name === "peckboard_dispatch_capture");
+    expect(dispatch?.input.prompt).toContain("selling hats");
+    expect(dispatch?.input.prompt).toMatch(/Do NOT call project_planner_ask/);
+    expect(dispatch?.input.clear_first).toBe(false);
+  });
+
+  it("asking is refused until the answer is recorded and the context reset", () => {
+    runningState(docs);
+    toolAsk({ topic: "T", kind: "fill", question: "Q ___", why: "W." }, ctx);
+    answer(FOLDER, REPO, "hats");
+    const r = toolAsk({ topic: "T", kind: "fill", question: "Next ___", why: "W." }, ctx);
+    expect(r.error).toMatch(/first record the answer/);
+  });
+
+  it("the definition write completes the record phase", () => {
+    runningState(docs);
+    toolAsk({ topic: "T", kind: "fill", question: "Q ___", why: "W." }, ctx);
+    answer(FOLDER, REPO, "hats");
+    toolWriteDefinition({ markdown: "# Def" }, ctx);
+    expect((docs.docs[KEY] as any).stage).toBe("recorded");
+  });
+
+  it("after the record turn ends, the ask turn goes out WITH the wipe", () => {
+    runningState(docs);
+    toolAsk({ topic: "T", kind: "fill", question: "Q ___", why: "W." }, ctx);
+    answer(FOLDER, REPO, "hats");
+    toolWriteDefinition({ markdown: "# Def" }, ctx);
+    setHandlers({
+      ...baseHandlers(docs),
+      peckboard_session_events: () => ({
+        events: [{ seq: 7, kind: "agent-end", name: null }],
+        latest_seq: 7,
+      }),
+    });
+    const s = pageState(FOLDER, REPO);
+    expect(s.status).toBe("thinking");
+    const st = docs.docs[KEY] as any;
+    expect(st.stage).toBe(null);
     // The wipe restarts event seq at 1 — a stale high-water mark would make
     // settleRun skip every post-clear event and blind the watchdog.
     expect(st.last_seq).toBe(0);
     const dispatch = hostCalls.find((c) => c.name === "peckboard_dispatch_capture");
-    expect(dispatch?.input.prompt).toContain("selling hats");
     expect(dispatch?.input.clear_first).toBe(true);
+    expect(dispatch?.input.prompt).toMatch(/chat history was reset/);
+  });
+
+  it("a record turn that ends without writing is nudged to record", () => {
+    runningState(docs);
+    toolAsk({ topic: "T", kind: "fill", question: "Q ___", why: "W." }, ctx);
+    answer(FOLDER, REPO, "hats");
+    setHandlers({
+      ...baseHandlers(docs),
+      peckboard_session_events: () => ({
+        events: [{ seq: 7, kind: "agent-end", name: null }],
+        latest_seq: 7,
+      }),
+    });
+    pageState(FOLDER, REPO);
+    const nudge = hostCalls.filter((c) => c.name === "peckboard_dispatch_capture").pop();
+    expect(nudge?.input.prompt).toMatch(/without recording the user's answer/);
+    expect(nudge?.input.clear_first).toBe(false);
   });
   it("refuses when no question is waiting", () => {
     expect(() => answer(FOLDER, REPO, "x")).toThrow(/no question waiting/);

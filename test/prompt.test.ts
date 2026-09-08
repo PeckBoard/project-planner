@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { SYSTEM_PROMPT, answerPrompt, kickoffPrompt } from "../src/prompt";
+import { SYSTEM_PROMPT, askNextPrompt, kickoffPrompt, recordPrompt } from "../src/prompt";
 
 describe("planner contract", () => {
   it("forbids specialist questions before purpose and goal are known", () => {
@@ -56,8 +56,8 @@ describe("planner contract", () => {
     expect(p).toMatch(/Generate 3 to 5 candidate topics from the definition/);
     expect(p).toMatch(/type a different topic/);
   });
-  it("answer prompt carries question, answer, definition, and queue", () => {
-    const p = answerPrompt({
+  it("record prompt carries the Q&A + state and forbids asking", () => {
+    const p = recordPrompt({
       question: "What is the goal?",
       answer: "Sell hats",
       definition: "# Def",
@@ -67,6 +67,18 @@ describe("planner contract", () => {
     expect(p).toContain("Sell hats");
     expect(p).toContain("# Def");
     expect(p).toContain("Who wears them?");
+    // The record turn runs WITH context and must stop after the write — the
+    // next question is asked from a wiped session in a separate turn.
+    expect(p).toContain("project_planner_write_definition");
+    expect(p).toMatch(/Do NOT call project_planner_ask/);
+    expect(p).not.toMatch(/chat history was reset/);
+  });
+
+  it("ask prompt carries the state and announces the reset", () => {
+    const p = askNextPrompt({ definition: "# Def", pending: ["Who wears them?"] });
+    expect(p).toContain("# Def");
+    expect(p).toContain("Who wears them?");
+    expect(p).toContain("project_planner_ask");
     // The session is wiped before this dispatch lands — the prompt must say
     // so, or the model hunts for turns that no longer exist.
     expect(p).toMatch(/chat history was reset/);

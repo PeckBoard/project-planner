@@ -2,10 +2,11 @@
 // Pure — unit-testable without an Extism runtime.
 //
 // Tuning notes, mirrored from the plugin README: the session must stay SMALL.
-// Every turn hands it the current definition and the pending queue, so it
-// never needs to re-read files or keep long history in play; the questions it
-// produces must each stand alone, because the user sees one slide at a time
-// with no transcript around it.
+// Each answer is handled in TWO turns: a record turn (full context — fold the
+// answer into the definition, end the turn) and, after the session's context
+// is wiped, a fresh ask turn (the definition and queue arrive with the
+// prompt). The questions the agent produces must each stand alone, because
+// the user sees one slide at a time with no transcript around it.
 
 export const DEFINITION_FILE = "PROJECT_DEFINITION.md";
 
@@ -33,11 +34,11 @@ Check the code before asking:
 - Only propose what the code actually shows — a guess is not a finding. If the code is silent on the question, ask normally with no proposal.
 - Keep these checks cheap: one or two reads per question at most, never a deep exploration.
 
-After every answer:
-1. Call project_planner_write_definition with the COMPLETE updated file: take the question and the answer and write ONE new requirement, or amend the one existing requirement the answer changes. Keep the rest intact. Requirements are short declarative sentences, each with its justification. Keep the file organized under these headings: Purpose, Goals, Users & Stories, Flows, Architecture, Technology, Deployment & Operations, Open Questions.
-2. Then either ask the next question (project_planner_ask) or finish (project_planner_finish).
+After every answer — two steps, two separate turns:
+1. RECORD (the turn that delivers the answer): call project_planner_write_definition with the COMPLETE updated file — take the question and the answer and write ONE new requirement, or amend the one existing requirement the answer changes; keep the rest intact. Requirements are short declarative sentences, each with its justification. Keep the file organized under these headings: Purpose, Goals, Users & Stories, Flows, Architecture, Technology, Deployment & Operations, Open Questions. Update the queue via project_planner_queue if the answer added or mooted follow-ups. Then END YOUR TURN — do NOT call project_planner_ask in this turn; the interview continues after your context is reset.
+2. ASK (a fresh turn after the reset): a new message carrying the current definition and queue tells you to continue — ask the next question via project_planner_ask, or call project_planner_finish when everything is covered and the queue is empty.
 
-Keep yourself small: your chat history is wiped after every user answer, and each answer message carries the complete interview state — the current definition and queue — so never re-read the definition from disk, never rely on remembering earlier turns, and keep any code checks to the short, targeted reads described above. Do not summarize progress in chat. Never ask the user anything through any other mechanism.`;
+Keep yourself small: your chat history is wiped after each answer is recorded, and the current definition and queue arrive with every message — so never re-read the definition from disk, never rely on remembering earlier turns, and keep any code checks to the short, targeted reads described above. Do not summarize progress in chat. Never ask the user anything through any other mechanism.`;
 
 /** First dispatch of a run, scoped to one repo. `definition` is the existing
  * file's content, or null when none exists yet. `topic` is an optional
@@ -69,8 +70,10 @@ export function kickoffPrompt(
   return parts.join("\n\n");
 }
 
-/** Dispatch after the user answers a slide. */
-export function answerPrompt(args: {
+/** The RECORD turn: dispatched (with full context) right after the user
+ * answers a slide. Write the answer into the definition, then stop — the
+ * next-question turn comes separately, after the context wipe. */
+export function recordPrompt(args: {
   question: string;
   answer: string;
   definition: string | null;
@@ -83,15 +86,35 @@ export function answerPrompt(args: {
     ? `Current ${DEFINITION_FILE} (between markers):\n<<<DEFINITION\n${args.definition}\nDEFINITION>>>`
     : `${DEFINITION_FILE} does not exist yet — seed it now.`;
   return (
-    `The user answered the slide. (Your chat history was reset — this message carries the ` +
-    `complete interview state; nothing earlier is coming back.)\n` +
+    `The user answered the slide.\n` +
     `Question: ${args.question}\n` +
     `Answer: ${args.answer}\n\n` +
     `${defPart}\n\n${queuePart}\n\n` +
-    `Now: (1) write the answer into the definition as one new or amended requirement via ` +
-    `project_planner_write_definition; (2) look through the pending queue and either ask the ` +
-    `next most valuable question via project_planner_ask or, if everything is covered and the ` +
-    `queue is empty, call project_planner_finish.`
+    `Now record it: (1) call project_planner_write_definition with the COMPLETE updated file, ` +
+    `folding this answer in as one new or amended requirement; (2) update the pending queue via ` +
+    `project_planner_queue if this answer added follow-ups or made queued ones moot. Then END ` +
+    `YOUR TURN. Do NOT call project_planner_ask — your context is reset after this turn, and ` +
+    `the next message will tell you to ask the next question.`
+  );
+}
+
+/** The ASK turn: dispatched onto the freshly wiped session once the record
+ * turn has landed. Carries the complete interview state. */
+export function askNextPrompt(args: { definition: string | null; pending: string[] }): string {
+  const queuePart = args.pending.length
+    ? `Pending queue:\n${args.pending.map((q) => `- ${q}`).join("\n")}`
+    : "Pending queue: empty.";
+  const defPart = args.definition
+    ? `Current ${DEFINITION_FILE} (between markers):\n<<<DEFINITION\n${args.definition}\nDEFINITION>>>`
+    : `${DEFINITION_FILE} does not exist yet — seed it via project_planner_write_definition first.`;
+  return (
+    `(Your chat history was reset — this message carries the complete interview state; nothing ` +
+    `earlier is coming back.)\n\n` +
+    `${defPart}\n\n${queuePart}\n\n` +
+    `Continue the interview: look through the queue and the definition's gaps, check the code ` +
+    `briefly if it can answer what you are about to ask, and ask the next most valuable ` +
+    `question via project_planner_ask — or, if everything is covered and the queue is empty, ` +
+    `call project_planner_finish.`
   );
 }
 
@@ -101,5 +124,14 @@ export function stalledPrompt(): string {
     "Your last run ended without showing the user a slide. Remember: the user only sees what " +
     "project_planner_ask shows. Ask the next question now (or call project_planner_finish if " +
     "the definition is complete)."
+  );
+}
+
+/** Nudge when a record turn ended without writing the definition. */
+export function recordStalledPrompt(): string {
+  return (
+    "Your last run ended without recording the user's answer. Call " +
+    "project_planner_write_definition now with the COMPLETE updated definition — fold the " +
+    "answer you were given into it as one new or amended requirement — then end your turn."
   );
 }

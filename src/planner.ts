@@ -17,7 +17,15 @@ import {
   storePut,
   writeFile,
 } from "./host";
-import { DEFINITION_FILE, SYSTEM_PROMPT, answerPrompt, kickoffPrompt, stalledPrompt } from "./prompt";
+import {
+  DEFINITION_FILE,
+  SYSTEM_PROMPT,
+  askNextPrompt,
+  kickoffPrompt,
+  recordPrompt,
+  recordStalledPrompt,
+  stalledPrompt,
+} from "./prompt";
 import { errMsg } from "./verdict";
 
 const COLLECTION = "planner";
@@ -81,8 +89,13 @@ export interface PlannerState {
   last_seq: number;
   nudges: number;
   started_at: string | null;
+  started_at: string | null;
   /** Last definition-change line reported by the agent. */
   last_note: string | null;
+  /** Answer-cycle phase: "record" = the record turn is out (write the answer
+   * into the definition, full context); "recorded" = the write landed and the
+   * turn's end triggers the wipe + fresh ask turn; null = not mid-cycle. */
+  stage?: "record" | "recorded" | null;
 }
 
 export function emptyState(): PlannerState {
@@ -99,6 +112,7 @@ export function emptyState(): PlannerState {
     nudges: 0,
     started_at: null,
     last_note: null,
+    stage: null,
   };
 }
 
@@ -323,11 +337,12 @@ export function answer(folderId: string, repoRaw: unknown, answerText: string): 
     status: "thinking",
     slide: null,
     nudges: 0,
-    // The dispatch below wipes the session first (clear_first), and event
-    // seq restarts at 1 on an empty session — a stale high-water mark here
-    // would make settleRun's tail read skip every post-clear event and blind
-    // the watchdog.
-    last_seq: 0,
+    // Phase 1 of the answer cycle: the RECORD turn runs with full context so
+    // the model still remembers asking the question (and any code check
+    // behind a proposed answer) while it folds the answer into the
+    // definition. The context wipe happens between turns, when settleRun
+    // dispatches the fresh ASK turn.
+    stage: "record",
     history: [
       ...state.history,
       { topic: asked.topic, question: asked.question, answer: text, note: null },
@@ -336,18 +351,14 @@ export function answer(folderId: string, repoRaw: unknown, answerText: string): 
   saveState(folderId, repo, next);
 
   try {
-    // clearFirst: every answer prompt carries the complete interview state
-    // (definition + queue + Q&A), so the session's history is dead weight —
-    // wipe it with the dispatch to reset the context window per question.
     dispatchCapture(
       state.session_id,
-      answerPrompt({
+      recordPrompt({
         question: asked.question,
         answer: text,
         definition: readFileOrNull(definitionPath(repo)),
         pending: next.pending,
       }),
-      true,
     );
   } catch (e) {
     saveState(folderId, repo, {
@@ -366,10 +377,11 @@ export function reset(folderId: string, repoRaw: unknown): any {
   return { ok: true };
 }
 
-/** While "thinking", watch the slim event tail: a run that ended without
- * asking gets nudged (the model forgot the tool), then fails; a session that
- * vanished fails immediately. Tool calls flip the status before this runs, so
- * a healthy run never trips it. */
+/** While "thinking", watch the slim event tail and drive the answer cycle:
+ * a record turn that ended after writing the definition gets the wipe + fresh
+ * ask turn dispatched; a run that ended without doing its job gets nudged,
+ * then fails; a session that vanished fails immediately. Tool calls flip the
+ * status/stage before this runs, so a healthy run never trips the nudges. */
 function settleRun(folderId: string, repo: string, state: PlannerState): PlannerState {
   if (state.status !== "thinking" || !state.session_id) {
     return state;
@@ -390,18 +402,45 @@ function settleRun(folderId: string, repo: string, state: PlannerState): Planner
     return state; // transient read failure — try again on the next poll
   }
 
-  let next = { ...state, last_seq: lastSeq };
-  // Re-read: an ask/write tool call may have landed while we polled.
+  // Re-read first: an ask/write tool call may have landed while we polled
+  // (toolWriteDefinition flips stage, toolAsk flips status).
   const fresh = loadState(folderId, repo);
   if (fresh.status !== "thinking") {
     return fresh;
   }
+  let next = { ...fresh, last_seq: Math.max(fresh.last_seq, lastSeq) };
 
   if (ended) {
-    if (next.nudges < MAX_NUDGES) {
+    if (next.stage === "recorded") {
+      // Phase 2 of the answer cycle: the answer is in the definition and the
+      // run is idle — the only safe wipe point. Dispatch the ASK turn onto a
+      // cleared session (clear_first orders wipe → dispatch inside one core
+      // task) and reset the event high-water mark: seq restarts at 1 after
+      // the wipe, and a stale mark would blind this watchdog.
+      try {
+        dispatchCapture(
+          state.session_id,
+          askNextPrompt({
+            definition: readFileOrNull(definitionPath(repo)),
+            pending: next.pending,
+          }),
+          true,
+        );
+        next = { ...next, stage: null, nudges: 0, last_seq: 0 };
+      } catch (e) {
+        next = {
+          ...next,
+          status: "failed",
+          error: `the next-question turn could not be dispatched: ${errMsg(e)}`,
+        };
+      }
+    } else if (next.nudges < MAX_NUDGES) {
       next = { ...next, nudges: next.nudges + 1 };
       try {
-        dispatchCapture(state.session_id, stalledPrompt());
+        dispatchCapture(
+          state.session_id,
+          next.stage === "record" ? recordStalledPrompt() : stalledPrompt(),
+        );
       } catch (e) {
         next = { ...next, status: "failed", error: `the planner session stopped responding: ${errMsg(e)}` };
       }
@@ -409,7 +448,10 @@ function settleRun(folderId: string, repo: string, state: PlannerState): Planner
       next = {
         ...next,
         status: "failed",
-        error: "the planner session kept ending its runs without showing a slide",
+        error:
+          next.stage === "record"
+            ? "the planner session kept ending its runs without recording the answer"
+            : "the planner session kept ending its runs without showing a slide",
       };
     }
   } else if (!sessionExists(state.session_id)) {
@@ -481,6 +523,16 @@ export function toolAsk(args: any, context: any): any {
       error:
         "a slide is already showing and unanswered — do not ask again; end your turn and wait " +
         "for the user's answer to arrive as the next message",
+    };
+  }
+  // Mid answer-cycle the record turn must stay ask-free: the next question is
+  // asked from a wiped session (the ASK turn settleRun dispatches). A slide
+  // published now would skip that reset and grow the context unboundedly.
+  if (state.stage === "record" || state.stage === "recorded") {
+    return {
+      error:
+        "not yet — first record the answer via project_planner_write_definition, then END your " +
+        "turn; your context is reset and the next message asks you to pose the next question",
     };
   }
   const kind = asString(args?.kind);
@@ -573,7 +625,15 @@ export function toolWriteDefinition(args: any, context: any): any {
   if (note && history.length && history[history.length - 1].note === null) {
     history[history.length - 1] = { ...history[history.length - 1], note };
   }
-  saveState(folderId, repo, { ...state, history, last_note: note ?? state.last_note });
+  saveState(folderId, repo, {
+    ...state,
+    history,
+    last_note: note ?? state.last_note,
+    // A write during the record turn completes phase 1: settleRun sees the
+    // stage and, once this turn ends, wipes the session and dispatches the
+    // fresh ask turn.
+    stage: state.stage === "record" ? "recorded" : state.stage,
+  });
   return { ok: true, path };
 }
 
