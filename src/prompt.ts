@@ -37,7 +37,7 @@ After every answer:
 1. Call project_planner_write_definition with the COMPLETE updated file: take the question and the answer and write ONE new requirement, or amend the one existing requirement the answer changes. Keep the rest intact. Requirements are short declarative sentences, each with its justification. Keep the file organized under these headings: Purpose, Goals, Users & Stories, Flows, Architecture, Technology, Deployment & Operations, Open Questions.
 2. Then either ask the next question (project_planner_ask) or finish (project_planner_finish).
 
-Keep yourself small: the current definition and queue arrive with every message, so never re-read the definition from disk, and keep any code checks to the short, targeted reads described above. Do not summarize progress in chat. Never ask the user anything through any other mechanism.`;
+Keep yourself small: your chat history is wiped after every user answer, and each answer message carries the complete interview state — the current definition and queue — so never re-read the definition from disk, never rely on remembering earlier turns, and keep any code checks to the short, targeted reads described above. Do not summarize progress in chat. Never ask the user anything through any other mechanism.`;
 
 /** First dispatch of a run, scoped to one repo. `definition` is the existing
  * file's content, or null when none exists yet. `topic` is an optional
@@ -83,7 +83,8 @@ export function answerPrompt(args: {
     ? `Current ${DEFINITION_FILE} (between markers):\n<<<DEFINITION\n${args.definition}\nDEFINITION>>>`
     : `${DEFINITION_FILE} does not exist yet — seed it now.`;
   return (
-    `The user answered the slide.\n` +
+    `The user answered the slide. (Your chat history was reset — this message carries the ` +
+    `complete interview state; nothing earlier is coming back.)\n` +
     `Question: ${args.question}\n` +
     `Answer: ${args.answer}\n\n` +
     `${defPart}\n\n${queuePart}\n\n` +

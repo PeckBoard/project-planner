@@ -67,5 +67,8 @@ describe("planner contract", () => {
     expect(p).toContain("Sell hats");
     expect(p).toContain("# Def");
     expect(p).toContain("Who wears them?");
+    // The session is wiped before this dispatch lands — the prompt must say
+    // so, or the model hunts for turns that no longer exist.
+    expect(p).toMatch(/chat history was reset/);
   });
 });

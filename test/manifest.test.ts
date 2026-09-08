@@ -20,6 +20,13 @@ describe("manifest", () => {
     expect(manifest.http_routes).toEqual(["GET /plugin-api/v1/project-planner"]);
   });
 
+  it("holds the grants the per-question context wipe needs", () => {
+    // The answer dispatch sends clear_first, which core gates on
+    // session_control on top of session_dispatch.
+    expect(manifest.permissions).toContain("session_dispatch");
+    expect(manifest.permissions).toContain("session_control");
+  });
+
   it("launches ONLY from the repo browser — no folder-level surface", () => {
     // A global sidebar page carries no x-peckboard-* scope header, and
     // folder/project/session buttons would put the planner back at the

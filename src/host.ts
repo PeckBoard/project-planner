@@ -84,8 +84,15 @@ export function createSession(input: CreateSessionInput): string {
   return id;
 }
 
-export function dispatchCapture(sessionId: string, prompt: string): void {
-  hostCall("peckboard_dispatch_capture", { session_id: sessionId, prompt });
+/// Kick off a capture run. With `clearFirst`, core wipes the session
+/// (events / todos / attachments / conversation) before dispatching, ordered
+/// inside one host-side task — needs the `session_control` permission.
+export function dispatchCapture(sessionId: string, prompt: string, clearFirst = false): void {
+  hostCall("peckboard_dispatch_capture", {
+    session_id: sessionId,
+    prompt,
+    clear_first: clearFirst,
+  });
 }
 
 export interface SessionEventBrief {

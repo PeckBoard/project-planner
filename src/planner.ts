@@ -323,6 +323,11 @@ export function answer(folderId: string, repoRaw: unknown, answerText: string): 
     status: "thinking",
     slide: null,
     nudges: 0,
+    // The dispatch below wipes the session first (clear_first), and event
+    // seq restarts at 1 on an empty session — a stale high-water mark here
+    // would make settleRun's tail read skip every post-clear event and blind
+    // the watchdog.
+    last_seq: 0,
     history: [
       ...state.history,
       { topic: asked.topic, question: asked.question, answer: text, note: null },
@@ -331,6 +336,9 @@ export function answer(folderId: string, repoRaw: unknown, answerText: string): 
   saveState(folderId, repo, next);
 
   try {
+    // clearFirst: every answer prompt carries the complete interview state
+    // (definition + queue + Q&A), so the session's history is dead weight —
+    // wipe it with the dispatch to reset the context window per question.
     dispatchCapture(
       state.session_id,
       answerPrompt({
@@ -339,6 +347,7 @@ export function answer(folderId: string, repoRaw: unknown, answerText: string): 
         definition: readFileOrNull(definitionPath(repo)),
         pending: next.pending,
       }),
+      true,
     );
   } catch (e) {
     saveState(folderId, repo, {

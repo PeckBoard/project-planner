@@ -116,6 +116,7 @@ describe("start", () => {
     const dispatch = hostCalls.find((c) => c.name === "peckboard_dispatch_capture");
     expect(dispatch?.input.prompt).toContain(`'${REPO}'`);
     expect(dispatch?.input.prompt).toMatch(/seed the skeleton/);
+    expect(dispatch?.input.clear_first).toBe(false); // kickoff keeps the fresh session as-is
     expect((docs.docs[KEY] as any).status).toBe("thinking");
     expect(docs.docs[`sessions/${SESSION}`]).toEqual({ folder_id: FOLDER, repo: REPO });
   });
@@ -210,18 +211,22 @@ describe("project_planner_ask", () => {
 });
 
 describe("answer", () => {
-  it("appends history and dispatches the answer prompt", () => {
+  it("appends history and dispatches the answer prompt with a context wipe", () => {
     runningState(docs);
     toolAsk({ topic: "Purpose", kind: "fill", question: "The project is for ___", why: "W." }, ctx);
+    (docs.docs[KEY] as any).last_seq = 42; // pretend settleRun already read an event tail
     setHandlers(baseHandlers(docs)); // clear the call log, keep the store
     answer(FOLDER, REPO, "selling hats");
     const st = docs.docs[KEY] as any;
     expect(st.status).toBe("thinking");
     expect(st.history[0].answer).toBe("selling hats");
+    // The wipe restarts event seq at 1 — a stale high-water mark would make
+    // settleRun skip every post-clear event and blind the watchdog.
+    expect(st.last_seq).toBe(0);
     const dispatch = hostCalls.find((c) => c.name === "peckboard_dispatch_capture");
     expect(dispatch?.input.prompt).toContain("selling hats");
+    expect(dispatch?.input.clear_first).toBe(true);
   });
-
   it("refuses when no question is waiting", () => {
     expect(() => answer(FOLDER, REPO, "x")).toThrow(/no question waiting/);
   });

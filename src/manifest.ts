@@ -41,6 +41,7 @@ export function manifestJson(): string {
       "models_read", // model picker on the start slide
       "session_write", // create the temp planner session
       "session_dispatch", // dispatch the kickoff prompt + each answer
+      "session_control", // clear_first on the answer dispatch — reset the session's context per question
       "session_read", // poll the slim event tail (is the run still going?)
       "session_prompt_write", // refresh the planner contract on an existing session
       "project_files_read", // read an existing PROJECT_DEFINITION.md
