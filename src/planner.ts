@@ -13,6 +13,7 @@ import {
   readFileOrNull,
   sessionEvents,
   sessionExists,
+  storeDelete,
   storeGet,
   storePut,
   writeFile,
@@ -39,6 +40,10 @@ const MAX_HISTORY = 200;
 /** How often a stalled run (ended without asking) is re-nudged before the
  * interview is marked failed. */
 const MAX_NUDGES = 2;
+/** Replacement sessions created in a row without the interview publishing a
+ * slide before it is failed instead — a session that is created but vanishes
+ * again right away must not spin up a new one on every poll. */
+const MAX_RECOVERIES = 3;
 /** Definition preview cap for the page (the file itself is not capped). */
 const MAX_DEFINITION_PREVIEW = 100_000;
 /** Repo-discovery caps: directories probed for a `.git/HEAD`. */
@@ -89,13 +94,26 @@ export interface PlannerState {
   last_seq: number;
   nudges: number;
   started_at: string | null;
-  started_at: string | null;
   /** Last definition-change line reported by the agent. */
   last_note: string | null;
   /** Answer-cycle phase: "record" = the record turn is out (write the answer
    * into the definition, full context); "recorded" = the write landed and the
    * turn's end triggers the wipe + fresh ask turn; null = not mid-cycle. */
   stage?: "record" | "recorded" | null;
+  /** Runs open in the session log (`agent-start` seen, `agent-end` not yet)
+   * and whether a run started since the last dispatch — together they tell
+   * the dispatched turn's `agent-end` from a late one of an older turn. */
+  turn_open: number;
+  turn_started: boolean;
+  /** Set by the wipe + ask dispatch: the pre-wipe log's high-water mark, held
+   * until the (asynchronous) wipe is seen to have landed; `wipe_at` (ms) bounds
+   * how long an ambiguous log is waited on. */
+  wipe_seq: number | null;
+  wipe_seq: number | null;
+  wipe_at: number | null;
+  /** Replacement sessions created since the last published slide (see
+   * recoverSession). */
+  recoveries: number;
 }
 
 export function emptyState(): PlannerState {
@@ -113,6 +131,11 @@ export function emptyState(): PlannerState {
     started_at: null,
     last_note: null,
     stage: null,
+    turn_open: 0,
+    turn_started: false,
+    wipe_seq: null,
+    wipe_at: null,
+    recoveries: 0,
   };
 }
 
@@ -262,6 +285,22 @@ export function pageState(folderId: string, repoRaw: unknown): any {
   };
 }
 
+/** The repo's interview session. Temp so core's boot sweep cleans up the ones
+ * a restarted/reset interview left behind — which also means a server restart
+ * mid-interview deletes the live one; recoverSession replaces it. */
+function createPlannerSession(repo: string, modelId: string): string {
+  return createSession({
+    name: `Project Planner interview — ${repo === "." ? "folder root" : repo}`,
+    model: modelId,
+    is_temp: true,
+    // Plugin-managed: core keeps expert sessions out of the user's session
+    // lists, and closing a tab the user opened on it doesn't delete it.
+    is_expert: true,
+    expert_kind: "project-planner",
+    system_prompt: SYSTEM_PROMPT,
+  });
+}
+
 /** Start (or restart) the interview for one repo. */
 export function start(
   folderId: string,
@@ -284,12 +323,7 @@ export function start(
   const definition = readFileOrNull(definitionPath(repo));
   let sessionId: string;
   try {
-    sessionId = createSession({
-      name: `Project Planner interview — ${repo === "." ? "folder root" : repo}`,
-      model: modelId,
-      is_temp: true,
-      system_prompt: SYSTEM_PROMPT,
-    });
+    sessionId = createPlannerSession(repo, modelId);
   } catch (e) {
     throw new Error(`could not create the planner session: ${errMsg(e)}`);
   }
@@ -331,12 +365,38 @@ export function answer(folderId: string, repoRaw: unknown, answerText: string): 
     throw new Error("the answer is empty");
   }
 
+  // Consume the event tail BEFORE the record dispatch. The watchdog stops
+  // reading while a slide waits, so the ask turn's own `agent-end` is still
+  // unread here; left in place, the first poll after this answer (the page
+  // polls right away) mistakes it for the record turn ending without a write
+  // and fires a record nudge that races the answer. When the nudge reaches
+  // the agent first it "records" with no answer in hand, the stage flips to
+  // recorded, and the context wipe then kills the turn still holding the
+  // real answer — the interview re-asks the same question forever.
+  let lastSeq = state.last_seq;
+  let turn = { open: state.turn_open, started: state.turn_started };
+  try {
+    ({ lastSeq, turn } = readEventTail(state.session_id, state.last_seq, turn));
+  } catch {
+    // Unreadable tail: keep the old mark; settleRun retries on the next poll.
+  }
+
   const asked = state.slide;
   const next: PlannerState = {
     ...state,
     status: "thinking",
     slide: null,
     nudges: 0,
+    last_seq: lastSeq,
+    // A new dispatch: nothing has started for it yet. Runs still open (the
+    // user answered before the ask turn wrapped up) stay counted, so their
+    // late `agent-end` is not taken for the record turn's.
+    turn_open: turn.open,
+    turn_started: false,
+    // The slide came from a tool call of the post-wipe ask turn, so any wipe
+    // has landed by now and the drain above read the fresh log.
+    wipe_seq: null,
+    wipe_at: null,
     // Phase 1 of the answer cycle: the RECORD turn runs with full context so
     // the model still remembers asking the question (and any code check
     // behind a proposed answer) while it folds the answer into the
@@ -361,6 +421,15 @@ export function answer(folderId: string, repoRaw: unknown, answerText: string): 
       }),
     );
   } catch (e) {
+    if (isSessionGone(e)) {
+      // The session vanished while the slide waited (e.g. a server restart's
+      // temp-session sweep): a replacement picks up the record turn.
+      const recovered = recoverSession(folderId, repo, next);
+      if (recovered.status === "failed") {
+        throw new Error(`could not send the answer: ${recovered.error}`);
+      }
+      return { ok: true };
+    }
     saveState(folderId, repo, {
       ...next,
       status: "failed",
@@ -377,27 +446,191 @@ export function reset(folderId: string, repoRaw: unknown): any {
   return { ok: true };
 }
 
+/** A host call failed because the session row no longer exists. */
+function isSessionGone(e: unknown): boolean {
+  return /session not found/i.test(errMsg(e));
+}
+
+/** Replace a vanished planner session and resume where the interview stood.
+ * Core's boot sweep deletes temp sessions without a tab, so a server restart
+ * mid-interview takes the session with it. Nothing is lost by that: the
+ * session's context is wiped after every answer anyway, and everything durable
+ * lives in the definition file, the queue, and this state. A waiting slide
+ * stays up and only the session is swapped (the answer goes to the new one);
+ * a thinking run re-dispatches the prompt for its stage. Saves and returns
+ * the new state — `failed` when no replacement could be brought up. */
+function recoverSession(folderId: string, repo: string, state: PlannerState): PlannerState {
+  const fail = (error: string, base: PlannerState = state): PlannerState => {
+    const failed: PlannerState = { ...base, status: "failed", error };
+    saveState(folderId, repo, failed);
+    return failed;
+  };
+  const recoveries = state.recoveries ?? 0;
+  if (recoveries >= MAX_RECOVERIES) {
+    return fail(
+      `the planner session disappeared ${recoveries + 1} times in a row and could not be ` +
+        "replaced for good — reset and start again",
+    );
+  }
+  if (!state.model) {
+    return fail("the planner session is gone and no model is on record to replace it — reset and start again");
+  }
+  let sessionId: string;
+  try {
+    sessionId = createPlannerSession(repo, state.model);
+  } catch (e) {
+    return fail(
+      `the planner session is gone and a replacement could not be created: ${errMsg(e)} — ` +
+        "reset and start again",
+    );
+  }
+  storePut(SESSIONS, sessionId, { folder_id: folderId, repo });
+  if (state.session_id && state.session_id !== sessionId) {
+    try {
+      storeDelete(SESSIONS, state.session_id);
+    } catch {
+      // A stale mapping is harmless: plannerStateFor checks state.session_id.
+    }
+  }
+  // A fresh session has a fresh log: every watchdog mark starts over.
+  let next: PlannerState = {
+    ...state,
+    session_id: sessionId,
+    recoveries: recoveries + 1,
+    nudges: 0,
+    last_seq: 0,
+    turn_open: 0,
+    turn_started: false,
+    wipe_seq: null,
+    wipe_at: null,
+  };
+  if (next.status !== "thinking") {
+    saveState(folderId, repo, next);
+    return next;
+  }
+
+  const definition = readFileOrNull(definitionPath(repo));
+  const last = next.history[next.history.length - 1];
+  let prompt: string;
+  if (next.stage === "record" && last) {
+    // The answer never reached a definition write: hand it over again.
+    prompt = recordPrompt({
+      question: last.question,
+      answer: last.answer,
+      definition,
+      pending: next.pending,
+    });
+  } else if (next.history.length === 0) {
+    // Still on the kickoff (the chosen starting topic is not kept; the agent
+    // asks for one).
+    next = { ...next, stage: null };
+    prompt = kickoffPrompt(repo, definition, next.pending, null);
+  } else {
+    // Between questions, or the answer is already recorded: ask the next one.
+    next = { ...next, stage: null };
+    prompt = askNextPrompt({ definition, pending: next.pending });
+  }
+  // Saved before the dispatch so the new session's first tool call finds it.
+  saveState(folderId, repo, next);
+  try {
+    dispatchCapture(sessionId, prompt);
+  } catch (e) {
+    return fail(`a replacement planner session was created but could not be started: ${errMsg(e)}`, next);
+  }
+  return next;
+}
+
+/** Page through a session's slim event log after `afterSeq`: the new
+ * high-water mark, the updated turn bookkeeping, and whether the run WE
+ * dispatched last has ended. An `agent-end` only counts when it closes the
+ * last open run and either a run started since our dispatch, or nothing was
+ * open before it (a run that died before its `agent-start`). A run that was
+ * still going at dispatch time (the user answered before the ask turn wrapped
+ * up) ends with nothing started since — that late `agent-end` is the old
+ * turn's, not ours. */
+function readEventTail(
+  sessionId: string,
+  afterSeq: number,
+  turn: { open: number; started: boolean },
+): { lastSeq: number; ended: boolean; turn: { open: number; started: boolean } } {
+  let lastSeq = afterSeq;
+  let ended = false;
+  let { open, started } = turn;
+  for (;;) {
+    const page = sessionEvents(sessionId, lastSeq, EVENTS_PAGE_LIMIT);
+    if (!page.events.length) break;
+    for (const e of page.events) {
+      if (typeof e.seq === "number" && e.seq > lastSeq) lastSeq = e.seq;
+      if (e.kind === "agent-start") {
+        open += 1;
+        started = true;
+      } else if (e.kind === "agent-end") {
+        const before = open;
+        open = Math.max(0, open - 1);
+        if (open === 0 && (started || before === 0)) ended = true;
+      }
+    }
+    if (page.events.length < EVENTS_PAGE_LIMIT) break;
+  }
+  return { lastSeq, ended, turn: { open, started } };
+}
+
+/** How long a log that may or may not be the pre-wipe one is waited on before
+ * it is read from the start anyway. The wipe itself takes milliseconds. */
+const WIPE_GRACE_MS = 30_000;
+
+/** After the wipe + ask dispatch: where to resume reading, or null while the
+ * pre-wipe log is still in place. Core wipes asynchronously and restarts seq
+ * at 1, so the old log (seq 1..wipe_seq, its last event the record turn's
+ * `agent-end`) must neither be settled on nor leave a high-water mark that
+ * hides every fresh event. */
+function wipeResumeSeq(sessionId: string, wipeSeq: number, wipeAt: number | null): number | null {
+  const probe = sessionEvents(sessionId, wipeSeq - 1, 2).events;
+  // Past the old end: the session moved on (a fresh log already longer than
+  // the old one, or a failed wipe the dispatch went ahead after) — either way
+  // only what lies past the mark is new.
+  if (probe.some((e) => e.seq > wipeSeq)) return wipeSeq;
+  // The old log's last event is gone: wiped, fresh log still shorter.
+  if (!probe.some((e) => e.seq === wipeSeq)) return 0;
+  // Exactly the old length: still the old log — unless the wipe should long
+  // have landed and the fresh log merely stopped at the same seq.
+  return wipeAt !== null && Date.now() - wipeAt > WIPE_GRACE_MS ? 0 : null;
+}
+
 /** While "thinking", watch the slim event tail and drive the answer cycle:
  * a record turn that ended after writing the definition gets the wipe + fresh
  * ask turn dispatched; a run that ended without doing its job gets nudged,
- * then fails; a session that vanished fails immediately. Tool calls flip the
- * status/stage before this runs, so a healthy run never trips the nudges. */
+ * then fails; a session that vanished is replaced (recoverSession). Tool
+ * calls flip the status/stage before this runs, so a healthy run never trips
+ * the nudges. A waiting slide only gets its session checked. */
 function settleRun(folderId: string, repo: string, state: PlannerState): PlannerState {
+  if (state.status === "waiting" && state.session_id) {
+    let gone = false;
+    try {
+      gone = !sessionExists(state.session_id);
+    } catch {
+      // Unknown: check again on the next poll.
+    }
+    return gone ? recoverSession(folderId, repo, state) : state;
+  }
   if (state.status !== "thinking" || !state.session_id) {
     return state;
   }
-  let lastSeq = state.last_seq;
-  let ended = false;
+  const wipePending = typeof state.wipe_seq === "number" && state.wipe_seq > 0;
+  let lastSeq: number;
+  let ended: boolean;
+  let turn: { open: number; started: boolean };
   try {
-    for (;;) {
-      const page = sessionEvents(state.session_id, lastSeq, EVENTS_PAGE_LIMIT);
-      if (!page.events.length) break;
-      for (const e of page.events) {
-        if (typeof e.seq === "number" && e.seq > lastSeq) lastSeq = e.seq;
-        if (e.kind === "agent-end") ended = true;
-      }
-      if (page.events.length < EVENTS_PAGE_LIMIT) break;
+    let fromSeq = state.last_seq;
+    if (wipePending) {
+      const resume = wipeResumeSeq(state.session_id, state.wipe_seq as number, state.wipe_at);
+      if (resume === null) return state; // the pre-wipe log is all there is yet
+      fromSeq = resume;
     }
+    ({ lastSeq, ended, turn } = readEventTail(state.session_id, fromSeq, {
+      open: state.turn_open,
+      started: state.turn_started,
+    }));
   } catch {
     return state; // transient read failure — try again on the next poll
   }
@@ -408,15 +641,24 @@ function settleRun(folderId: string, repo: string, state: PlannerState): Planner
   if (fresh.status !== "thinking") {
     return fresh;
   }
-  let next = { ...fresh, last_seq: Math.max(fresh.last_seq, lastSeq) };
+  let next: PlannerState = {
+    ...fresh,
+    // Across a wipe the old (higher) mark is meaningless — take the fresh one.
+    last_seq: wipePending ? lastSeq : Math.max(fresh.last_seq, lastSeq),
+    wipe_seq: null,
+    wipe_at: null,
+    turn_open: turn.open,
+    turn_started: turn.started,
+  };
 
   if (ended) {
     if (next.stage === "recorded") {
       // Phase 2 of the answer cycle: the answer is in the definition and the
       // run is idle — the only safe wipe point. Dispatch the ASK turn onto a
       // cleared session (clear_first orders wipe → dispatch inside one core
-      // task) and reset the event high-water mark: seq restarts at 1 after
-      // the wipe, and a stale mark would blind this watchdog.
+      // task). The wipe lands asynchronously and restarts seq at 1: remember
+      // the old log's end so polls before the wipe don't settle on it, and
+      // start the fresh log's mark at 0.
       try {
         dispatchCapture(
           state.session_id,
@@ -426,8 +668,18 @@ function settleRun(folderId: string, repo: string, state: PlannerState): Planner
           }),
           true,
         );
-        next = { ...next, stage: null, nudges: 0, last_seq: 0 };
+        next = {
+          ...next,
+          stage: null,
+          nudges: 0,
+          last_seq: 0,
+          wipe_seq: next.last_seq > 0 ? next.last_seq : null,
+          wipe_at: Date.now(),
+          turn_open: 0,
+          turn_started: false,
+        };
       } catch (e) {
+        if (isSessionGone(e)) return recoverSession(folderId, repo, next);
         next = {
           ...next,
           status: "failed",
@@ -435,13 +687,14 @@ function settleRun(folderId: string, repo: string, state: PlannerState): Planner
         };
       }
     } else if (next.nudges < MAX_NUDGES) {
-      next = { ...next, nudges: next.nudges + 1 };
+      next = { ...next, nudges: next.nudges + 1, turn_started: false };
       try {
         dispatchCapture(
           state.session_id,
           next.stage === "record" ? recordStalledPrompt() : stalledPrompt(),
         );
       } catch (e) {
+        if (isSessionGone(e)) return recoverSession(folderId, repo, next);
         next = { ...next, status: "failed", error: `the planner session stopped responding: ${errMsg(e)}` };
       }
     } else {
@@ -455,11 +708,7 @@ function settleRun(folderId: string, repo: string, state: PlannerState): Planner
       };
     }
   } else if (!sessionExists(state.session_id)) {
-    next = {
-      ...next,
-      status: "failed",
-      error: "the planner session is gone (closed, cleared, or crashed) — reset and start again",
-    };
+    return recoverSession(folderId, repo, next);
   }
 
   if (JSON.stringify(next) !== JSON.stringify(state)) {
@@ -584,7 +833,8 @@ export function toolAsk(args: any, context: any): any {
     proposed_answer: proposedAnswer,
     evidence: proposedAnswer ? evidence : null,
   };
-  saveState(folderId, repo, { ...state, status: "waiting", slide, nudges: 0 });
+  // A slide is progress: the session works, so the replacement budget refills.
+  saveState(folderId, repo, { ...state, status: "waiting", slide, nudges: 0, recoveries: 0 });
   return {
     ok: true,
     note: "The slide is showing. End your turn now — the user's answer arrives as the next message.",

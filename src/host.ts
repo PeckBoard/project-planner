@@ -70,6 +70,8 @@ export interface CreateSessionInput {
   name: string;
   model: string;
   is_temp: boolean;
+  is_expert?: boolean;
+  expert_kind?: string;
   system_prompt?: string;
 }
 

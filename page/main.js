@@ -299,7 +299,6 @@ function render() {
     case "idle":
       inner.appendChild(startScreen());
       break;
-      break;
     case "thinking":
       inner.appendChild(trail(true));
       inner.appendChild(thinkingScreen());

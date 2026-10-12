@@ -112,6 +112,10 @@ describe("start", () => {
     start(FOLDER, REPO, "mock:happy-path");
     const create = hostCalls.find((c) => c.name === "peckboard_create_session");
     expect(create?.input.is_temp).toBe(true);
+    // Expert-classified so core hides it from session lists and a tab close
+    // doesn't delete it.
+    expect(create?.input.is_expert).toBe(true);
+    expect(create?.input.expert_kind).toBe("project-planner");
     expect(create?.input.system_prompt).toContain("project_planner_ask");
     const dispatch = hostCalls.find((c) => c.name === "peckboard_dispatch_capture");
     expect(dispatch?.input.prompt).toContain(`'${REPO}'`);
@@ -265,6 +269,7 @@ describe("answer", () => {
     // The wipe restarts event seq at 1 — a stale high-water mark would make
     // settleRun skip every post-clear event and blind the watchdog.
     expect(st.last_seq).toBe(0);
+    expect(st.wipe_seq).toBe(7); // the pre-wipe log's end, held until the wipe lands
     const dispatch = hostCalls.find((c) => c.name === "peckboard_dispatch_capture");
     expect(dispatch?.input.clear_first).toBe(true);
     expect(dispatch?.input.prompt).toMatch(/chat history was reset/);
@@ -286,6 +291,122 @@ describe("answer", () => {
     expect(nudge?.input.prompt).toMatch(/without recording the user's answer/);
     expect(nudge?.input.clear_first).toBe(false);
   });
+
+  it("the ask turn's own agent-end is not mistaken for the record turn ending", () => {
+    // The session log as it stands when the user answers: the turn that
+    // published the slide has ended. The watchdog doesn't read while a slide
+    // waits, so that agent-end is still past the stored high-water mark.
+    const log = [
+      { seq: 1, kind: "agent-start", name: null },
+      { seq: 2, kind: "agent-tool-end", name: "project_planner_ask" },
+      { seq: 3, kind: "agent-end", name: null },
+    ];
+    const tail = ({ after_seq }: any) => {
+      const events = log.filter((e) => e.seq > (after_seq ?? 0));
+      return { events, latest_seq: events.length ? events[events.length - 1].seq : null };
+    };
+    runningState(docs);
+    setHandlers({ ...baseHandlers(docs), peckboard_session_events: tail });
+    toolAsk({ topic: "Purpose", kind: "fill", question: "The project is for ___", why: "W." }, ctx);
+    answer(FOLDER, REPO, "selling hats");
+    expect((docs.docs[KEY] as any).last_seq).toBe(3);
+
+    // The page polls immediately after posting the answer: the record turn
+    // has not ended, so nothing may be dispatched on top of the answer.
+    setHandlers({ ...baseHandlers(docs), peckboard_session_events: tail });
+    pageState(FOLDER, REPO);
+    expect(hostCalls.filter((c) => c.name === "peckboard_dispatch_capture")).toEqual([]);
+    const st = docs.docs[KEY] as any;
+    expect(st.stage).toBe("record");
+    expect(st.nudges).toBe(0);
+  });
+  it("a late agent-end of the ask turn is not taken for the record turn's", () => {
+    // The user answers while the turn that published the slide is still
+    // running: its agent-end is not in the log yet when answer() drains it.
+    const log = [
+      { seq: 1, kind: "agent-start", name: null },
+      { seq: 2, kind: "agent-tool-end", name: "project_planner_ask" },
+    ];
+    const tail = ({ after_seq }: any) => {
+      const events = log.filter((e) => e.seq > (after_seq ?? 0));
+      return { events, latest_seq: events.length ? events[events.length - 1].seq : null };
+    };
+    runningState(docs);
+    setHandlers({ ...baseHandlers(docs), peckboard_session_events: tail });
+    toolAsk({ topic: "Purpose", kind: "fill", question: "The project is for ___", why: "W." }, ctx);
+    answer(FOLDER, REPO, "selling hats");
+    expect((docs.docs[KEY] as any).turn_open).toBe(1);
+
+    // The ask turn wraps up AFTER the record prompt went out.
+    log.push({ seq: 3, kind: "agent-end", name: null });
+    setHandlers({ ...baseHandlers(docs), peckboard_session_events: tail });
+    pageState(FOLDER, REPO);
+    expect(hostCalls.filter((c) => c.name === "peckboard_dispatch_capture")).toEqual([]);
+    let st = docs.docs[KEY] as any;
+    expect(st.stage).toBe("record");
+    expect(st.nudges).toBe(0);
+
+    // The record turn itself ends without writing: THAT one is nudged.
+    log.push({ seq: 4, kind: "agent-start", name: null }, { seq: 5, kind: "agent-end", name: null });
+    setHandlers({ ...baseHandlers(docs), peckboard_session_events: tail });
+    pageState(FOLDER, REPO);
+    const nudge = hostCalls.filter((c) => c.name === "peckboard_dispatch_capture").pop();
+    expect(nudge?.input.prompt).toMatch(/without recording the user's answer/);
+    st = docs.docs[KEY] as any;
+    expect(st.nudges).toBe(1);
+  });
+
+  it("polls before the wipe lands neither settle on the old log nor blind the watchdog", () => {
+    // The session log as the record turn (which wrote the definition) ends.
+    let log = [
+      { seq: 1, kind: "agent-start", name: null },
+      { seq: 2, kind: "agent-end", name: null },
+      { seq: 3, kind: "agent-start", name: null },
+      { seq: 4, kind: "agent-tool-end", name: "project_planner_write_definition" },
+      { seq: 5, kind: "agent-end", name: null },
+    ];
+    const tail = ({ after_seq, limit }: any) => {
+      const events = log.filter((e) => e.seq > (after_seq ?? 0)).slice(0, limit ?? 200);
+      return { events, latest_seq: events.length ? events[events.length - 1].seq : null };
+    };
+    const handlers = () => ({ ...baseHandlers(docs), peckboard_session_events: tail });
+    const dispatches = () => hostCalls.filter((c) => c.name === "peckboard_dispatch_capture");
+    runningState(docs);
+    Object.assign(docs.docs[KEY] as any, { stage: "recorded", last_seq: 2 });
+    setHandlers(handlers());
+    pageState(FOLDER, REPO); // record turn ended → wipe + ask dispatch
+    expect(dispatches().map((c) => c.input.clear_first)).toEqual([true]);
+    expect((docs.docs[KEY] as any).wipe_seq).toBe(5);
+
+    // The page polls again before core's wipe has run: the old log, with the
+    // record turn's agent-end, is still all there is.
+    setHandlers(handlers());
+    pageState(FOLDER, REPO);
+    expect(dispatches()).toEqual([]);
+    let st = docs.docs[KEY] as any;
+    expect(st.nudges).toBe(0);
+    expect(st.wipe_seq).toBe(5);
+
+    // The wipe lands and the fresh ask turn is under way — seq restarts at 1.
+    log = [
+      { seq: 1, kind: "agent-start", name: null },
+      { seq: 2, kind: "agent-text", name: null },
+    ];
+    setHandlers(handlers());
+    pageState(FOLDER, REPO);
+    expect(dispatches()).toEqual([]);
+    st = docs.docs[KEY] as any;
+    expect(st.wipe_seq).toBe(null);
+    expect(st.last_seq).toBe(2);
+
+    // That turn ends without asking: the watchdog sees it and nudges.
+    log.push({ seq: 3, kind: "agent-end", name: null });
+    setHandlers(handlers());
+    pageState(FOLDER, REPO);
+    expect(dispatches().pop()?.input.prompt).toMatch(/without showing the user a slide/);
+    expect((docs.docs[KEY] as any).nudges).toBe(1);
+  });
+
   it("refuses when no question is waiting", () => {
     expect(() => answer(FOLDER, REPO, "x")).toThrow(/no question waiting/);
   });
@@ -339,15 +460,6 @@ describe("pageState settling + reset", () => {
     expect(s.error).toMatch(/without showing a slide/);
   });
 
-  it("fails when the planner session vanished", () => {
-    runningState(docs);
-    setHandlers({
-      ...baseHandlers(docs),
-      peckboard_list_sessions_brief: () => ({ sessions: [] }),
-    });
-    expect(pageState(FOLDER, REPO).status).toBe("failed");
-  });
-
   it("reset clears ONLY its repo's interview, never the file", () => {
     runningState(docs);
     docs.docs[`planner/${FOLDER}|tools/cli`] = { ...emptyState(), status: "done" };
@@ -361,5 +473,115 @@ describe("pageState settling + reset", () => {
     const s = pageState(FOLDER, REPO);
     expect(s.repo).toBe(REPO);
     expect(s.definition_file).toBe("apps/web/PROJECT_DEFINITION.md");
+  });
+});
+
+// Core's boot sweep deletes temp sessions with no tab, so a server restart
+// mid-interview takes the planner session with it. The plugin replaces it.
+describe("session recovery", () => {
+  const NEW = "s2";
+  /** The old session is gone: absent from the listing, not-found on dispatch. */
+  function goneHandlers(extra: Record<string, (input: any) => unknown> = {}) {
+    return {
+      ...baseHandlers(docs),
+      peckboard_create_session: () => ({ session: { id: NEW } }),
+      peckboard_list_sessions_brief: () => ({ sessions: [{ session_id: NEW }] }),
+      peckboard_dispatch_capture: ({ session_id }: any) =>
+        session_id === SESSION ? { error: "session not found" } : { ok: true },
+      ...extra,
+    };
+  }
+  const dispatches = () => hostCalls.filter((c) => c.name === "peckboard_dispatch_capture");
+
+  it("thinking mid-record: a new session gets the record prompt with the pending answer", () => {
+    runningState(docs);
+    Object.assign(docs.docs[KEY] as any, {
+      stage: "record",
+      history: [{ topic: "T", question: "The project is for ___", answer: "selling hats", note: null }],
+      last_seq: 9,
+      turn_open: 1,
+      turn_started: true,
+      wipe_seq: 5,
+      wipe_at: Date.now(),
+      nudges: 1,
+    });
+    setHandlers(goneHandlers());
+    const s = pageState(FOLDER, REPO);
+    expect(s.status).toBe("thinking");
+    const st = docs.docs[KEY] as any;
+    expect(st.session_id).toBe(NEW);
+    expect(st.stage).toBe("record");
+    expect([st.last_seq, st.turn_open, st.turn_started, st.wipe_seq, st.wipe_at, st.nudges]).toEqual([
+      0,
+      0,
+      false,
+      null,
+      null,
+      0,
+    ]);
+    expect(docs.docs[`sessions/${NEW}`]).toEqual({ folder_id: FOLDER, repo: REPO });
+    expect(docs.docs[`sessions/${SESSION}`]).toBeUndefined();
+    const create = hostCalls.find((c) => c.name === "peckboard_create_session");
+    expect(create?.input).toMatchObject({ is_temp: true, is_expert: true, model: "m" });
+    expect(dispatches().map((c) => c.input.session_id)).toEqual([NEW]);
+    expect(dispatches()[0].input.prompt).toContain("selling hats");
+    // The new session drives the interview; the old one no longer does.
+    expect(toolWriteDefinition({ markdown: "# Def" }, { folderId: FOLDER, sessionId: NEW }).ok).toBe(true);
+  });
+
+  it("thinking before the first slide: the new session gets the kickoff", () => {
+    runningState(docs);
+    setHandlers(goneHandlers());
+    pageState(FOLDER, REPO);
+    expect((docs.docs[KEY] as any).session_id).toBe(NEW);
+    expect(dispatches()[0].input.prompt).toMatch(/Begin the interview now/);
+  });
+
+  it("waiting: the slide stays and the answer goes to the new session", () => {
+    runningState(docs);
+    toolAsk({ topic: "Purpose", kind: "fill", question: "The project is for ___", why: "W." }, ctx);
+    setHandlers(goneHandlers());
+    const s = pageState(FOLDER, REPO);
+    expect(s.status).toBe("waiting");
+    expect(s.slide.question).toBe("The project is for ___");
+    expect((docs.docs[KEY] as any).session_id).toBe(NEW);
+    expect(dispatches()).toEqual([]); // nothing to say until the user answers
+
+    setHandlers(goneHandlers());
+    answer(FOLDER, REPO, "selling hats");
+    expect(dispatches().map((c) => c.input.session_id)).toEqual([NEW]);
+    expect(dispatches()[0].input.prompt).toContain("selling hats");
+  });
+
+  it("waiting: an answer sent before any poll noticed still reaches a new session", () => {
+    runningState(docs);
+    toolAsk({ topic: "Purpose", kind: "fill", question: "The project is for ___", why: "W." }, ctx);
+    setHandlers(goneHandlers());
+    expect(answer(FOLDER, REPO, "selling hats").ok).toBe(true);
+    const st = docs.docs[KEY] as any;
+    expect(st.session_id).toBe(NEW);
+    expect(st.stage).toBe("record");
+    expect(dispatches().map((c) => c.input.session_id)).toEqual([SESSION, NEW]);
+    expect(dispatches()[1].input.prompt).toContain("selling hats");
+  });
+
+  it("fails with a clear error when no replacement can be created, without retrying", () => {
+    runningState(docs);
+    setHandlers(goneHandlers({ peckboard_create_session: () => ({ error: "model unavailable" }) }));
+    const s = pageState(FOLDER, REPO);
+    expect(s.status).toBe("failed");
+    expect(s.error).toMatch(/replacement could not be created: model unavailable/);
+    setHandlers(goneHandlers());
+    pageState(FOLDER, REPO);
+    expect(hostCalls.some((c) => c.name === "peckboard_create_session")).toBe(false);
+  });
+
+  it("stops replacing a session that keeps vanishing", () => {
+    runningState(docs);
+    setHandlers(goneHandlers({ peckboard_list_sessions_brief: () => ({ sessions: [] }) }));
+    for (let i = 0; i < 5; i++) pageState(FOLDER, REPO);
+    const st = docs.docs[KEY] as any;
+    expect(st.status).toBe("failed");
+    expect(st.error).toMatch(/disappeared/);
   });
 });
