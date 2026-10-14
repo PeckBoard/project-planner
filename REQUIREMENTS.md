@@ -30,18 +30,21 @@ agent  MUST call        project_planner_ask  → status = waiting, slide stored
 page  GET  /state poll  → render the slide
 user  answers
 page  POST /answer    → dispatchCapture(answerPrompt)
-agent  MUST             project_planner_write_definition  (full file, one req changed)
+agent  MUST             project_planner_write_definition  (one section, one req changed)
                         then project_planner_ask  (or _finish)
 ```
 
-**The slideshow never sees chat text.** `peckboard_session_events` is slim (`{seq, kind, name}` — no payloads). The **only** channel from agent to UI is the four MCP tools:
+**The slideshow never sees chat text.** `peckboard_session_events` is slim (`{seq, kind, name}` — no payloads). The **only** channel from agent to UI is the five MCP tools:
 
 | Tool | Effect |
 |---|---|
-| `project_planner_ask` | Publish one slide; `status = waiting` |
+| `project_planner_ask` | Publish one slide (names its `section`); `status = waiting` |
 | `project_planner_queue` | Add/remove pending follow-ups |
-| `project_planner_write_definition` | Write `PROJECT_DEFINITION.md`; does **not** leave thinking |
+| `project_planner_write_definition` | Write ONE section (`overview` = root file) + regenerate the root index; does **not** leave thinking |
+| `project_planner_read_section` | Return one section file's content (on demand) |
 | `project_planner_finish` | `status = done` + summary |
+
+**Split definition (0.8.0).** `PROJECT_DEFINITION.md` = overview (Purpose, Goals) + generated Sections index; one file per section under `project-definition/`, each with a `> Depends on: PROJECT_DEFINITION.md` header. Prompts carry the root only, plus the slide's section on the record turn. Layout + legacy split live in `src/sections.ts`.
 
 If the agent writes a paragraph instead of calling `project_planner_ask`, the user sees nothing. The watchdog (`settleRun` in `src/planner.ts`) treats `agent-end` while still `thinking` as a stall: nudge (`stalledPrompt`) twice (`MAX_NUDGES = 2`), then fail.
 
@@ -138,7 +141,7 @@ Non-goals until the above works: diagrams polish, multi-folder interviews, per-r
 ## 5. Constraints (Do Not Break)
 
 - Folder-scoped. `x-peckboard-folder-id` (or project/session that resolves to a folder). No `sidebar_items`.
-- Definition path is always `PROJECT_DEFINITION.md` at the folder root (`DEFINITION_FILE` in `src/prompt.ts`).
+- Root definition path is always `PROJECT_DEFINITION.md` at the repo root; sections under `project-definition/` (`src/sections.ts`).
 - Tools only from the interview session (`plannerStateFor`).
 - Page is sandboxed: parent-proxied fetch, `textContent` for agent strings, no `innerHTML` for model output. Definition preview may use the existing escape-first markdown helper (`page/md.js`).
 - Host functions used today stay lazy (inside functions) so vitest can load modules without Extism (`src/host.ts`).
@@ -170,8 +173,9 @@ Do not invent a second channel (parsing `agent-text` events). Slim events have n
 
 | Path | Role |
 |---|---|
-| `src/prompt.ts` | `SYSTEM_PROMPT`, kickoff / answer / stall prompts |
-| `src/planner.ts` | State, start/answer/reset, watchdog, four tools |
+| `src/prompt.ts` | `SYSTEM_PROMPT`, kickoff / record / ask / stall prompts |
+| `src/sections.ts` | Split layout: paths, section headers, root index, legacy split |
+| `src/planner.ts` | State, start/answer/reset, watchdog, five tools |
 | `src/lib.ts` | Hook dispatch → tools |
 | `src/http.ts` | `GET` page, `GET state`, `POST start/answer/reset` |
 | `src/host.ts` | Extism host FFI |

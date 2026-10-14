@@ -409,7 +409,76 @@ body {
   padding: 22px 26px;
   animation: enter .3s ease;
   text-align: left;
+  text-align: left;
+  display: grid;
+  grid-template-columns: minmax(170px, 220px) 1fr;
+  gap: 22px;
 }
+.defpanel > .def-empty { grid-column: 1 / -1; }
+@media (max-width: 640px) {
+  .defpanel { grid-template-columns: 1fr; }
+  .def-files { flex-direction: row; overflow-x: auto; padding-bottom: 4px; }
+  .def-file { flex: none; }
+}
+.def-files { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.def-file {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  border-radius: 10px;
+  padding: 7px 10px;
+  cursor: pointer;
+  font: inherit;
+  transition: background .15s, border-color .15s;
+}
+.def-file:hover { background: var(--surface-2); }
+.def-file.active { background: var(--accent-soft); border-color: var(--accent); }
+.def-file.missing .def-file-title { color: var(--text-3); }
+.def-file-title { font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.def-file-badge {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.def-file-path {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-3);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.def-view { min-width: 0; }
+.def-view-path {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--text-3);
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border);
+  overflow-wrap: anywhere;
+}
+.defpanel blockquote {
+  margin: 8px 0;
+  padding: 6px 12px;
+  border-left: 3px solid var(--accent);
+  background: var(--surface-2);
+  border-radius: 0 8px 8px 0;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.def-link { color: var(--accent); text-decoration: none; font-weight: 600; }
+.def-link:hover { text-decoration: underline; }
 .defpanel h1, .defpanel h2, .defpanel h3 { margin: 14px 0 6px; line-height: 1.3; }
 .defpanel h1 { font-size: 20px; }
 .defpanel h2 { font-size: 16px; color: var(--accent); }

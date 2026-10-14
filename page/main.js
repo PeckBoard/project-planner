@@ -166,6 +166,11 @@ document.head.appendChild(style);
 let state = null; // last /state payload
 let lastSlideNo = -1; // re-render slides only when the slide changes
 let showDefinition = false;
+// The definition is split into a root index + section files; which one the
+// panel shows. `defPanelEl` lets polls swap the panel in place when a file
+// changes, without rebuilding the slide (a rebuild reads as flicker).
+let activeDef = "overview";
+let defPanelEl = null;
 let chosen = new Set(); // selected option labels
 let otherText = "";
 let submitting = false;
@@ -243,14 +248,20 @@ async function refresh() {
       (next.slide ? next.slide.slide_no : -1) !== (state && state.slide ? state.slide.slide_no : -1);
     const statusChanged = !state || state.status !== next.status;
     const noteChanged = state && state.last_note !== next.last_note;
-    // First definition write lands mid-generation — re-render so the topbar
-    // gains its "View definition" toggle without waiting for the slide.
-    const defChanged = state && state.definition_exists !== next.definition_exists;
+    // A definition write lands mid-generation — re-render so the topbar's
+    // file count and toggle follow without waiting for the slide.
+    const defChanged = state && defSignature(state) !== defSignature(next);
+    const defContentChanged = state && defContent(state) !== defContent(next);
     state = next;
     if (statusChanged || slideChanged || defChanged) {
       render();
-    } else if (state.status === "thinking" && noteChanged) {
-      updateThinkingNote();
+    } else {
+      if (state.status === "thinking" && noteChanged) updateThinkingNote();
+      if (defContentChanged && showDefinition && defPanelEl) {
+        const fresh = definitionPanel();
+        defPanelEl.replaceWith(fresh);
+        defPanelEl = fresh;
+      }
     }
   } catch (e) {
     state = { status: "bridge-error", error: e.message };
@@ -264,6 +275,8 @@ function selectRepo(path) {
   remember("planner-repo", path);
   state = null;
   showDefinition = false;
+  activeDef = "overview";
+  showDefinition = false;
   render();
   refresh();
 }
@@ -273,6 +286,8 @@ function switchRepo() {
   forget("planner-repo");
   state = null;
   repos = null;
+  showDefinition = false;
+  activeDef = "overview";
   showDefinition = false;
   render();
   refresh();
@@ -316,7 +331,11 @@ function render() {
     default:
       inner.appendChild(failedScreen(state.error || "The page lost its connection."));
   }
-  if (showDefinition) inner.appendChild(definitionPanel());
+  defPanelEl = null;
+  if (showDefinition) {
+    defPanelEl = definitionPanel();
+    inner.appendChild(defPanelEl);
+  }
 }
 
 function topbar() {
@@ -338,7 +357,15 @@ function topbar() {
     bar.appendChild(back);
   }
   if (state && state.definition_exists) {
-    bar.appendChild(el("span", "file-chip", state.definition_file || "PROJECT_DEFINITION.md"));
+    const written = (state.definition_files || []).filter((f) => f.exists).length;
+    bar.appendChild(
+      el(
+        "span",
+        "file-chip",
+        (state.definition_file || "PROJECT_DEFINITION.md") +
+          (written > 1 ? " + " + (written - 1) + " section file" + (written > 2 ? "s" : "") : ""),
+      ),
+    );
     const toggle = el("button", "ghost-btn", showDefinition ? "Hide definition" : "View definition");
     toggle.onclick = () => {
       showDefinition = !showDefinition;
@@ -417,7 +444,8 @@ function repoPickerScreen() {
         "repo-row-meta",
         (r.path === "." ? "" : r.path + " · ") +
           repoStatusLabel(r) +
-          (r.answered ? " · " + r.answered + " answered" : ""),
+          (r.answered ? " · " + r.answered + " answered" : "") +
+          (r.definition_files ? " · " + r.definition_files + " definition file" + (r.definition_files > 1 ? "s" : "") : ""),
       ),
     );
     row.appendChild(body);
@@ -868,15 +896,76 @@ function failedScreen(message) {
   return card;
 }
 
+/** Which definition files exist — a change re-renders the whole page. */
+function defSignature(s) {
+  return (s.definition_files || []).map((f) => (f.exists ? "1" : "0")).join("");
+}
+
+function defContent(s) {
+  return (s.definition_files || []).map((f) => f.content || "").join("\u0000");
+}
+
+/** The split definition: the root index first, then one entry per section
+ * file. Section files that are not written yet are listed too, so the whole
+ * layout is visible from the start. Index links switch the file shown. */
 function definitionPanel() {
   const panel = el("div", "defpanel");
-  if (state.definition) {
-    const holder = el("div");
-    holder.innerHTML = markdownToHtml(state.definition);
-    panel.appendChild(holder);
-  } else {
-    panel.appendChild(el("div", "def-empty", "The definition file has not been written yet."));
+  const files = state.definition_files || [];
+  if (!files.some((f) => f.exists)) {
+    panel.appendChild(el("div", "def-empty", "The definition files have not been written yet."));
+    return panel;
   }
+  const active = files.find((f) => f.section === activeDef) || files[0];
+  const select = (section) => {
+    activeDef = section;
+    const fresh = definitionPanel();
+    panel.replaceWith(fresh);
+    if (defPanelEl === panel) defPanelEl = fresh;
+  };
+
+  const nav = el("div", "def-files");
+  nav.setAttribute("role", "tablist");
+  files.forEach((f, i) => {
+    const btn = el("button", "def-file" + (f === active ? " active" : "") + (f.exists ? "" : " missing"));
+    btn.type = "button";
+    btn.setAttribute("role", "tab");
+    btn.setAttribute("aria-selected", f === active ? "true" : "false");
+    btn.dataset.section = f.section;
+    const name = el("span", "def-file-title", f.title);
+    if (i === 0) name.appendChild(el("span", "def-file-badge", "index"));
+    btn.appendChild(name);
+    btn.appendChild(el("span", "def-file-path", f.exists ? f.path.split("/").slice(-2).join("/") : "not written yet"));
+    btn.title = f.path;
+    btn.onclick = () => select(f.section);
+    nav.appendChild(btn);
+  });
+  panel.appendChild(nav);
+
+  const view = el("div", "def-view");
+  view.setAttribute("role", "tabpanel");
+  view.appendChild(el("div", "def-view-path", active.path));
+  if (active.content) {
+    const holder = el("div", "def-body");
+    holder.innerHTML = markdownToHtml(active.content);
+    holder.addEventListener("click", (ev) => {
+      const a = ev.target.closest && ev.target.closest("a[data-def-link]");
+      if (!a) return;
+      ev.preventDefault();
+      const target = a.getAttribute("data-def-link").replace(/^(\.\.\/|\.\/)+/, "");
+      const hit = files.find((f) => f.path === target || f.path.endsWith("/" + target));
+      if (hit) select(hit.section);
+    });
+    view.appendChild(holder);
+  } else {
+    view.appendChild(
+      el(
+        "div",
+        "def-empty",
+        "This section has not been written yet — the interview creates it when an answer belongs here.",
+      ),
+    );
+  }
+  panel.appendChild(view);
   return panel;
 }
 

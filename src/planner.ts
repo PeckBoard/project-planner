@@ -19,7 +19,6 @@ import {
   writeFile,
 } from "./host";
 import {
-  DEFINITION_FILE,
   SYSTEM_PROMPT,
   askNextPrompt,
   kickoffPrompt,
@@ -27,6 +26,22 @@ import {
   recordStalledPrompt,
   stalledPrompt,
 } from "./prompt";
+import {
+  OVERVIEW,
+  OVERVIEW_SKELETON,
+  SECTIONS,
+  SECTION_IDS,
+  isSection,
+  isSplitRoot,
+  parseRoot,
+  rootFile,
+  rootPath,
+  sectionBody,
+  sectionFile,
+  sectionPath,
+  sectionTitle,
+  splitLegacy,
+} from "./sections";
 import { errMsg } from "./verdict";
 
 const COLLECTION = "planner";
@@ -44,7 +59,7 @@ const MAX_NUDGES = 2;
  * slide before it is failed instead — a session that is created but vanishes
  * again right away must not spin up a new one on every poll. */
 const MAX_RECOVERIES = 3;
-/** Definition preview cap for the page (the file itself is not capped). */
+/** Per-file preview cap for the page (the files themselves are not capped). */
 const MAX_DEFINITION_PREVIEW = 100_000;
 /** Repo-discovery caps: directories probed for a `.git/HEAD`. */
 const MAX_PROBE_DIRS = 400;
@@ -71,12 +86,16 @@ export interface Slide {
   /** One sentence naming where the code shows it; required with a proposal
    * so the user can judge the conclusion. */
   evidence: string | null;
+  /** Definition section the answer is recorded in (see sections.ts); null
+   * on slides published before the definition was split. */
+  section: string | null;
 }
 
 export interface HistoryEntry {
   topic: string;
   question: string;
   answer: string;
+  section?: string | null;
   note: string | null;
 }
 
@@ -108,7 +127,6 @@ export interface PlannerState {
   /** Set by the wipe + ask dispatch: the pre-wipe log's high-water mark, held
    * until the (asynchronous) wipe is seen to have landed; `wipe_at` (ms) bounds
    * how long an ambiguous log is waited on. */
-  wipe_seq: number | null;
   wipe_seq: number | null;
   wipe_at: number | null;
   /** Replacement sessions created since the last published slide (see
@@ -147,10 +165,128 @@ export function normalizeRepo(raw: unknown): string {
   return r === "" ? "." : r;
 }
 
-/** Where the repo's definition file lives — INSIDE the repo, so it is
- * committed with the code it describes. */
+/** Where the repo's root definition file lives — INSIDE the repo, so it is
+ * committed with the code it describes. Section files sit next to it. */
 export function definitionPath(repo: string): string {
-  return repo === "." ? DEFINITION_FILE : `${repo}/${DEFINITION_FILE}`;
+  return rootPath(repo);
+}
+
+// ── Split definition I/O ────────────────────────────────────────────────────
+
+const MIGRATED = "migrated from the single-file definition";
+
+/** The root index as the agent sees it — READ-ONLY, so it is safe from page
+ * routes (core allows file writes only inside a tool invocation). A legacy
+ * single-file definition is shown as the index it splits into; the split
+ * itself lands on the planner session's next tool call (migrateLegacy). */
+export function loadIndex(repo: string): string | null {
+  const root = readFileOrNull(rootPath(repo));
+  if (root === null || isSplitRoot(root)) return root;
+  const { overview, sections } = splitLegacy(root);
+  return rootFile(
+    overview || OVERVIEW_SKELETON,
+    SECTIONS.map((s) => ({ id: s.id, exists: s.id in sections, summary: MIGRATED })),
+  );
+}
+
+/** Tool-invocation only: split a legacy single-file definition into section
+ * files (nothing dropped: unrecognised headings stay in the overview).
+ * Returns the root content, or null when there is no definition. */
+function migrateLegacy(repo: string): string | null {
+  const root = readFileOrNull(rootPath(repo));
+  if (root === null || isSplitRoot(root)) return root;
+  const { overview, sections } = splitLegacy(root);
+  const summaries: Record<string, string> = {};
+  for (const [id, body] of Object.entries(sections)) {
+    writeFile(sectionPath(repo, id), sectionFile(id, body));
+    summaries[id] = MIGRATED;
+  }
+  return writeRoot(repo, overview || OVERVIEW_SKELETON, summaries);
+}
+
+/** Regenerate the root file from its overview and the per-section summaries;
+ * a section is indexed as written when its file exists. Returns the content. */
+function writeRoot(repo: string, overview: string, summaries: Record<string, string>): string {
+  const entries = SECTIONS.map((s) => ({
+    id: s.id,
+    exists: readFileOrNull(sectionPath(repo, s.id)) !== null,
+    summary: summaries[s.id] ?? "",
+  }));
+  const content = rootFile(overview, entries);
+  writeFile(rootPath(repo), content);
+  return content;
+}
+
+/** Write one section (the overview goes into the root file) and refresh the
+ * root index. Returns the written path. */
+export function writeSection(repo: string, id: string, markdown: string, summary: string | null): string {
+  const current = migrateLegacy(repo);
+  const parsed = current === null ? { overview: OVERVIEW_SKELETON, summaries: {} } : parseRoot(current);
+  if (id === OVERVIEW) {
+    writeRoot(repo, markdown.trim(), parsed.summaries);
+    return rootPath(repo);
+  }
+  writeFile(sectionPath(repo, id), sectionFile(id, markdown));
+  const summaries = { ...parsed.summaries };
+  if (summary) summaries[id] = summary.replace(/\s+/g, " ").trim();
+  writeRoot(repo, parsed.overview, summaries);
+  return sectionPath(repo, id);
+}
+
+/** One section's current content (`overview` → the root index). Read-only:
+ * a not-yet-split legacy definition is answered from its in-memory split. */
+function readSection(repo: string, id: string): string | null {
+  const root = readFileOrNull(rootPath(repo));
+  if (id === OVERVIEW) return loadIndex(repo);
+  if (root !== null && !isSplitRoot(root)) {
+    const body = splitLegacy(root).sections[id];
+    return body ? sectionFile(id, body) : null;
+  }
+  return readFileOrNull(sectionPath(repo, id));
+}
+
+/** The record turn's prompt: the index plus ONLY the section the slide named. */
+function buildRecordPrompt(
+  repo: string,
+  entry: { question: string; answer: string; section?: string | null },
+  pending: string[],
+): string {
+  const section = isSection(entry.section) ? entry.section : null;
+  const index = loadIndex(repo);
+  return recordPrompt({
+    repo,
+    question: entry.question,
+    answer: entry.answer,
+    section,
+    sectionContent: section && section !== OVERVIEW ? readSection(repo, section) : null,
+    index,
+    pending,
+  });
+}
+function preview(content: string | null): string | null {
+  return content !== null && content.length > MAX_DEFINITION_PREVIEW
+    ? content.slice(0, MAX_DEFINITION_PREVIEW)
+    : content;
+}
+
+/** Every definition file for the page: the root first, then each section. */
+function definitionFiles(repo: string): Array<{
+  section: string;
+  title: string;
+  path: string;
+  exists: boolean;
+  content: string | null;
+}> {
+  return SECTION_IDS.map((id) => {
+    const content = readFileOrNull(sectionPath(repo, id));
+    return {
+      section: id,
+      title: sectionTitle(id),
+      path: sectionPath(repo, id),
+      exists: content !== null,
+      content: preview(content),
+    };
+  });
 }
 
 function stateKey(folderId: string, repo: string): string {
@@ -242,11 +378,13 @@ export function requireFolder(): string {
 export function repoList(folderId: string): any {
   const repos = discoverRepos().map((r) => {
     const st = loadState(folderId, r.path);
+    const files = SECTION_IDS.filter((id) => readFileOrNull(sectionPath(r.path, id)) !== null).length;
     return {
       ...r,
       status: st.status,
       answered: st.history.length,
-      definition_exists: readFileOrNull(definitionPath(r.path)) !== null,
+      definition_exists: files > 0,
+      definition_files: files,
     };
   });
   return { repos };
@@ -257,7 +395,7 @@ export function pageState(folderId: string, repoRaw: unknown): any {
   const repo = normalizeRepo(repoRaw);
   let state = loadState(folderId, repo);
   state = settleRun(folderId, repo, state);
-  const definition = readFileOrNull(definitionPath(repo));
+  const files = definitionFiles(repo);
   return {
     repo,
     status: state.status,
@@ -269,13 +407,10 @@ export function pageState(folderId: string, repoRaw: unknown): any {
     error: state.error,
     last_note: state.last_note,
     model: state.model,
-    definition_exists: definition !== null,
-    definition:
-      definition === null
-        ? null
-        : definition.length > MAX_DEFINITION_PREVIEW
-          ? definition.slice(0, MAX_DEFINITION_PREVIEW)
-          : definition,
+    definition_exists: files.some((f) => f.exists),
+    // Root first, then every section — written or not — so the page can
+    // show the whole split layout.
+    definition_files: files,
     definition_file: definitionPath(repo),
     // Model picker for the start slide; tiers ascend in capability.
     models:
@@ -320,7 +455,7 @@ export function start(
     throw new Error("an interview is already running for this repo — reset it first");
   }
 
-  const definition = readFileOrNull(definitionPath(repo));
+  const definition = loadIndex(repo);
   let sessionId: string;
   try {
     sessionId = createPlannerSession(repo, modelId);
@@ -405,7 +540,7 @@ export function answer(folderId: string, repoRaw: unknown, answerText: string): 
     stage: "record",
     history: [
       ...state.history,
-      { topic: asked.topic, question: asked.question, answer: text, note: null },
+      { topic: asked.topic, question: asked.question, answer: text, section: asked.section ?? null, note: null },
     ].slice(-MAX_HISTORY),
   };
   saveState(folderId, repo, next);
@@ -413,12 +548,7 @@ export function answer(folderId: string, repoRaw: unknown, answerText: string): 
   try {
     dispatchCapture(
       state.session_id,
-      recordPrompt({
-        question: asked.question,
-        answer: text,
-        definition: readFileOrNull(definitionPath(repo)),
-        pending: next.pending,
-      }),
+      buildRecordPrompt(repo, next.history[next.history.length - 1], next.pending),
     );
   } catch (e) {
     if (isSessionGone(e)) {
@@ -509,17 +639,12 @@ function recoverSession(folderId: string, repo: string, state: PlannerState): Pl
     return next;
   }
 
-  const definition = readFileOrNull(definitionPath(repo));
+  const definition = loadIndex(repo);
   const last = next.history[next.history.length - 1];
   let prompt: string;
   if (next.stage === "record" && last) {
     // The answer never reached a definition write: hand it over again.
-    prompt = recordPrompt({
-      question: last.question,
-      answer: last.answer,
-      definition,
-      pending: next.pending,
-    });
+    prompt = buildRecordPrompt(repo, last, next.pending);
   } else if (next.history.length === 0) {
     // Still on the kickoff (the chosen starting topic is not kept; the agent
     // asks for one).
@@ -528,7 +653,7 @@ function recoverSession(folderId: string, repo: string, state: PlannerState): Pl
   } else {
     // Between questions, or the answer is already recorded: ask the next one.
     next = { ...next, stage: null };
-    prompt = askNextPrompt({ definition, pending: next.pending });
+    prompt = askNextPrompt({ repo, index: definition, pending: next.pending });
   }
   // Saved before the dispatch so the new session's first tool call finds it.
   saveState(folderId, repo, next);
@@ -663,7 +788,8 @@ function settleRun(folderId: string, repo: string, state: PlannerState): Planner
         dispatchCapture(
           state.session_id,
           askNextPrompt({
-            definition: readFileOrNull(definitionPath(repo)),
+            repo,
+            index: loadIndex(repo),
             pending: next.pending,
           }),
           true,
@@ -754,6 +880,14 @@ function plannerStateFor(context: any): { folderId: string; repo: string; state:
       "this interview was reset or restarted — this session no longer drives it",
     );
   }
+  // The first point where file writes are allowed: split a legacy
+  // single-file definition now. Best effort — the read-only views cover it
+  // until a write succeeds.
+  try {
+    migrateLegacy(repo);
+  } catch {
+    // retried on the next tool call
+  }
   return { folderId, repo, state };
 }
 
@@ -788,6 +922,12 @@ export function toolAsk(args: any, context: any): any {
   const question = asString(args?.question);
   const why = asString(args?.why);
   const topic = asString(args?.topic) || "Project";
+  const section = asString(args?.section);
+  if (!isSection(section)) {
+    return {
+      error: `section is required — the definition section this answer is recorded in, one of: ${SECTION_IDS.join(", ")}`,
+    };
+  }
   if (kind !== "choice" && kind !== "fill") {
     return { error: "kind must be 'choice' or 'fill'" };
   }
@@ -832,6 +972,7 @@ export function toolAsk(args: any, context: any): any {
     diagram: asString(args?.diagram) || null,
     proposed_answer: proposedAnswer,
     evidence: proposedAnswer ? evidence : null,
+    section,
   };
   // A slide is progress: the session works, so the replacement budget refills.
   saveState(folderId, repo, { ...state, status: "waiting", slide, nudges: 0, recoveries: 0 });
@@ -860,15 +1001,19 @@ export function toolQueue(args: any, context: any): any {
   };
 }
 
-/** project_planner_write_definition — persist the repo's definition file. */
+/** project_planner_write_definition — persist ONE section of the repo's split
+ * definition (the overview goes into the root file) and refresh the index. */
 export function toolWriteDefinition(args: any, context: any): any {
   const { folderId, repo, state } = plannerStateFor(context);
-  const markdown = typeof args?.markdown === "string" ? args.markdown : "";
-  if (!markdown.trim()) {
-    return { error: "markdown is required — the complete new definition file content" };
+  const section = asString(args?.section);
+  if (!isSection(section)) {
+    return { error: `section is required — one of: ${SECTION_IDS.join(", ")}` };
   }
-  const path = definitionPath(repo);
-  writeFile(path, markdown.endsWith("\n") ? markdown : markdown + "\n");
+  const markdown = typeof args?.markdown === "string" ? args.markdown : "";
+  if (!markdown.trim() || (section !== OVERVIEW && !sectionBody(markdown))) {
+    return { error: "markdown is required — the complete new body of that section" };
+  }
+  const path = writeSection(repo, section, markdown, asString(args?.summary) || null);
   const note = asString(args?.note) || null;
   const history = state.history.slice();
   // The note describes what the just-answered question changed — pin it there.
@@ -887,6 +1032,22 @@ export function toolWriteDefinition(args: any, context: any): any {
   return { ok: true, path };
 }
 
+/** project_planner_read_section — one section's full current content, so the
+ * agent reads only what the next question needs. */
+export function toolReadSection(args: any, context: any): any {
+  const { repo } = plannerStateFor(context);
+  const section = asString(args?.section);
+  if (!isSection(section)) {
+    return { error: `section must be one of: ${SECTION_IDS.join(", ")}` };
+  }
+  const content = readSection(repo, section);
+  return {
+    section,
+    path: sectionPath(repo, section),
+    content,
+    ...(content === null ? { note: "not written yet" } : {}),
+  };
+}
 /** project_planner_finish — completion slide. */
 export function toolFinish(args: any, context: any): any {
   const { folderId, repo, state } = plannerStateFor(context);

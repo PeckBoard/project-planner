@@ -11,10 +11,16 @@ export function escapeHtml(s) {
 }
 
 function inlineMd(s) {
-  return s
-    .replace(/`([^`]+)`/g, "<code>$1</code>")
-    .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
-    .replace(/\*([^*]+)\*/g, "<i>$1</i>");
+  return (
+    s
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      // Links to the split definition's own .md files only: they switch the
+      // file shown in the panel (`data-def-link`), never navigate the iframe.
+      // The path charset is closed, so nothing escaped above can break out.
+      .replace(/\[([^\]]+)\]\(([\w./-]+\.md)\)/g, '<a href="#" class="def-link" data-def-link="$2">$1</a>')
+      .replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>")
+      .replace(/\*([^*]+)\*/g, "<i>$1</i>")
+  );
 }
 
 export function markdownToHtml(md) {
@@ -24,6 +30,7 @@ export function markdownToHtml(md) {
   for (const line of lines) {
     const h = line.match(/^(#{1,3})\s+(.*)$/);
     const li = line.match(/^\s*[-*]\s+(.*)$/);
+    const quote = line.match(/^&gt;\s?(.*)$/);
     if (inList && !li) {
       out.push("</ul>");
       inList = false;
@@ -37,8 +44,12 @@ export function markdownToHtml(md) {
         inList = true;
       }
       out.push(`<li>${inlineMd(li[1])}</li>`);
+    } else if (quote) {
+      out.push(`<blockquote>${inlineMd(quote[1])}</blockquote>`);
     } else if (line.trim() === "") {
       // paragraph break
+    } else if (/^&lt;!--.*--&gt;$/.test(line.trim())) {
+      // HTML comment (e.g. the generated-index marker) — not shown
     } else {
       out.push(`<p>${inlineMd(line)}</p>`);
     }

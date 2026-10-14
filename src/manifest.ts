@@ -9,14 +9,17 @@ const DESCRIPTION =
   "every option justified, plus small diagrams — generated one after another " +
   "by a dedicated agent session. When the repo's code already answers a " +
   "question, the slide proposes that answer with evidence for one-click " +
-  "confirmation. Each answer is written into the repo's PROJECT_DEFINITION.md " +
-  "as a requirement; an existing definition is read first and the interview " +
-  "continues from it. Each repo's interview resets independently.";
+  "confirmation. Each answer is written as a requirement into the repo's split " +
+  "definition: PROJECT_DEFINITION.md holds purpose, goals and an index linking one " +
+  "file per section under project-definition/, so each question reads only what it " +
+  "needs. An existing definition is read first (a single-file one is split) and the " +
+  "interview continues from it. Each repo's interview resets independently.";
 // Single source of truth for the version: package.json. Bundled in by
 // esbuild/vitest (resolveJsonModule) — never hardcode a version string here;
 // a manifest that self-reports an old version makes the registry's
 // "upgrade available" chip permanent (0.3.0 shipped that way).
 import { version as VERSION } from "../package.json";
+import { SECTION_IDS } from "./sections";
 
 const REPOSITORY = "https://github.com/peckboard/project-planner";
 // Inline SVG (lucide "clipboard-list") for the page items; rendered sandboxed.
@@ -44,8 +47,8 @@ export function manifestJson(): string {
       "session_control", // clear_first on the answer dispatch — reset the session's context per question
       "session_read", // poll the slim event tail (is the run still going?)
       "session_prompt_write", // refresh the planner contract on an existing session
-      "project_files_read", // read an existing PROJECT_DEFINITION.md
-      "project_files_write", // write the definition after each answer
+      "project_files_read", // read the existing definition files
+      "project_files_write", // write the definition files after each answer
       "user_authority", // serve the authenticated slideshow data routes
       "contribute_sidebar", // the page items below
     ],
@@ -95,6 +98,13 @@ export function manifestJson(): string {
         input_schema: {
           type: "object",
           properties: {
+            section: {
+              type: "string",
+              enum: SECTION_IDS,
+              description:
+                "The definition section this question's answer will be recorded in. 'overview' = " +
+                "purpose and goals (and the starting-topic slide).",
+            },
             topic: {
               type: "string",
               description:
@@ -162,7 +172,7 @@ export function manifestJson(): string {
                 "proposal so they can judge it.",
             },
           },
-          required: ["topic", "kind", "question", "why"],
+          required: ["topic", "section", "kind", "question", "why"],
           additionalProperties: false,
         },
       },
@@ -195,17 +205,33 @@ export function manifestJson(): string {
       {
         name: "project_planner_write_definition",
         description:
-          "Write the FULL updated PROJECT_DEFINITION.md to the folder root. Call this after every " +
-          "answer: take the question and its answer and add ONE requirement — or amend the existing " +
-          "requirement it changes — keeping everything else intact. Requirements are short " +
-          "declarative sentences with their justification. Also call it once at the start if no " +
-          "definition file exists yet, seeding the skeleton.",
+          "Write ONE section of the repo's split project definition. PROJECT_DEFINITION.md holds " +
+          "the overview (purpose, goals) and an index the plugin generates; every other section " +
+          "is its own file under project-definition/, whose title and depends-on header the " +
+          "plugin adds. Call this after every answer: take the question and its answer and add " +
+          "ONE requirement to the section — or amend the existing requirement it changes — " +
+          "keeping the rest of the section intact. Requirements are short declarative sentences " +
+          "with their justification. Also call it once at the start with section 'overview' if " +
+          "no definition exists yet, seeding the skeleton.",
         input_schema: {
           type: "object",
           properties: {
+            section: {
+              type: "string",
+              enum: SECTION_IDS,
+              description: "Which section to write. 'overview' = the root file's purpose and goals.",
+            },
             markdown: {
               type: "string",
-              description: "The complete new content of PROJECT_DEFINITION.md.",
+              description:
+                "The complete new body of that section (for 'overview': title, Purpose and Goals; " +
+                "the section index is appended for you).",
+            },
+            summary: {
+              type: "string",
+              description:
+                "For a non-overview section: one short line summarizing the WHOLE section, shown " +
+                "next to its link in the index so later turns can decide whether to read it.",
             },
             note: {
               type: "string",
@@ -213,7 +239,26 @@ export function manifestJson(): string {
                 "One short line describing what changed (shown on the slide's progress trail).",
             },
           },
-          required: ["markdown"],
+          required: ["section", "markdown"],
+          additionalProperties: false,
+        },
+      },
+      {
+        name: "project_planner_read_section",
+        description:
+          "Read one section of the repo's split project definition in full. The index you are " +
+          "given each turn names every section with a one-line summary; call this only when the " +
+          "next question depends on a section's details. Never read every section.",
+        input_schema: {
+          type: "object",
+          properties: {
+            section: {
+              type: "string",
+              enum: SECTION_IDS,
+              description: "Which section to read. 'overview' = the root file.",
+            },
+          },
+          required: ["section"],
           additionalProperties: false,
         },
       },

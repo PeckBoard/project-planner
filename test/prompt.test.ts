@@ -56,16 +56,21 @@ describe("planner contract", () => {
     expect(p).toMatch(/Generate 3 to 5 candidate topics from the definition/);
     expect(p).toMatch(/type a different topic/);
   });
-  it("record prompt carries the Q&A + state and forbids asking", () => {
+  it("record prompt carries the Q&A, the index, ONLY the named section, and forbids asking", () => {
     const p = recordPrompt({
+      repo: "apps/web",
       question: "What is the goal?",
       answer: "Sell hats",
-      definition: "# Def",
+      section: "technology",
+      sectionContent: "# Technology\n- Rust",
+      index: "# Def",
       pending: ["Who wears them?"],
     });
     expect(p).toContain("What is the goal?");
     expect(p).toContain("Sell hats");
     expect(p).toContain("# Def");
+    expect(p).toContain("- Rust");
+    expect(p).toContain("apps/web/project-definition/technology.md");
     expect(p).toContain("Who wears them?");
     // The record turn runs WITH context and must stop after the write — the
     // next question is asked from a wiped session in a separate turn.
@@ -74,13 +79,20 @@ describe("planner contract", () => {
     expect(p).not.toMatch(/chat history was reset/);
   });
 
-  it("ask prompt carries the state and announces the reset", () => {
-    const p = askNextPrompt({ definition: "# Def", pending: ["Who wears them?"] });
+  it("ask prompt carries the index and announces the reset", () => {
+    const p = askNextPrompt({ repo: ".", index: "# Def", pending: ["Who wears them?"] });
     expect(p).toContain("# Def");
     expect(p).toContain("Who wears them?");
     expect(p).toContain("project_planner_ask");
+    expect(p).toContain("project_planner_read_section");
     // The session is wiped before this dispatch lands — the prompt must say
     // so, or the model hunts for turns that no longer exist.
     expect(p).toMatch(/chat history was reset/);
+  });
+
+  it("contract explains the split layout and that sections depend on the root", () => {
+    expect(SYSTEM_PROMPT).toContain("project-definition/");
+    expect(SYSTEM_PROMPT).toMatch(/depends on PROJECT_DEFINITION\.md/);
+    expect(SYSTEM_PROMPT).toMatch(/never read every section/);
   });
 });

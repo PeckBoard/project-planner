@@ -149,6 +149,8 @@ export function readFileOrNull(path: string): string | null {
 }
 
 /// Write one UTF-8 text file under the caller's folder (jailed by core).
+/// Parent dirs are created — section files live in `project-definition/`.
+/// Core only allows this during a tool invocation, never from a page route.
 export function writeFile(path: string, content: string): void {
-  hostCall("peckboard_write_file", { path, content, create_dirs: false });
+  hostCall("peckboard_write_file", { path, content, create_dirs: true });
 }

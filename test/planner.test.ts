@@ -13,6 +13,7 @@ import {
   toolAsk,
   toolFinish,
   toolQueue,
+  toolReadSection,
   toolWriteDefinition,
 } from "../src/planner";
 
@@ -146,7 +147,7 @@ describe("project_planner_ask", () => {
   it("publishes a valid slide and flips to waiting", () => {
     const r = toolAsk(
       {
-        topic: "Purpose",
+        topic: "Purpose", section: "overview",
         kind: "choice",
         question: "What is this project for?",
         why: "Everything else depends on it.",
@@ -164,32 +165,32 @@ describe("project_planner_ask", () => {
   });
 
   it("rejects a slide without justification for the problem", () => {
-    const r = toolAsk({ topic: "T", kind: "fill", question: "Name ___?", why: "" }, ctx);
+    const r = toolAsk({ topic: "T", section: "overview", kind: "fill", question: "Name ___?", why: "" }, ctx);
     expect(r.error).toMatch(/why is required/);
   });
 
   it("only accepts the repo's own planner session", () => {
     expect(() =>
-      toolAsk({ topic: "T", kind: "fill", question: "Q ___", why: "W." }, { folderId: FOLDER, sessionId: "intruder" }),
+      toolAsk({ topic: "T", section: "overview", kind: "fill", question: "Q ___", why: "W." }, { folderId: FOLDER, sessionId: "intruder" }),
     ).toThrow(/reserved for the Project Planner/);
   });
 
   it("refuses a session whose interview was reset", () => {
     docs.docs[KEY] = emptyState(); // reset wiped session_id
-    expect(() => toolAsk({ topic: "T", kind: "fill", question: "Q ___", why: "W." }, ctx)).toThrow(
+    expect(() => toolAsk({ topic: "T", section: "overview", kind: "fill", question: "Q ___", why: "W." }, ctx)).toThrow(
       /reset or restarted/,
     );
   });
 
   it("refuses a second ask while a slide is unanswered", () => {
-    toolAsk({ topic: "T", kind: "fill", question: "First ___?", why: "W." }, ctx);
-    const r = toolAsk({ topic: "T", kind: "fill", question: "Second ___?", why: "W." }, ctx);
+    toolAsk({ topic: "T", section: "overview", kind: "fill", question: "First ___?", why: "W." }, ctx);
+    const r = toolAsk({ topic: "T", section: "overview", kind: "fill", question: "Second ___?", why: "W." }, ctx);
     expect(r.error).toMatch(/already showing and unanswered/);
   });
 
   it("requires evidence when the code proposes an answer", () => {
     const r = toolAsk(
-      { topic: "Technology", kind: "fill", question: "The language is ___.", why: "W.", proposed_answer: "Rust" },
+      { topic: "Technology", section: "overview", kind: "fill", question: "The language is ___.", why: "W.", proposed_answer: "Rust" },
       ctx,
     );
     expect(r.error).toMatch(/evidence is required/);
@@ -198,7 +199,7 @@ describe("project_planner_ask", () => {
   it("stores a code-derived proposal with its evidence on the slide", () => {
     const r = toolAsk(
       {
-        topic: "Technology",
+        topic: "Technology", section: "overview",
         kind: "fill",
         question: "The language is ___.",
         why: "W.",
@@ -217,7 +218,7 @@ describe("project_planner_ask", () => {
 describe("answer", () => {
   it("record turn: appends history and dispatches the answer WITHOUT a wipe", () => {
     runningState(docs);
-    toolAsk({ topic: "Purpose", kind: "fill", question: "The project is for ___", why: "W." }, ctx);
+    toolAsk({ topic: "Purpose", section: "overview", kind: "fill", question: "The project is for ___", why: "W." }, ctx);
     (docs.docs[KEY] as any).last_seq = 42; // pretend settleRun already read an event tail
     setHandlers(baseHandlers(docs)); // clear the call log, keep the store
     answer(FOLDER, REPO, "selling hats");
@@ -236,25 +237,25 @@ describe("answer", () => {
 
   it("asking is refused until the answer is recorded and the context reset", () => {
     runningState(docs);
-    toolAsk({ topic: "T", kind: "fill", question: "Q ___", why: "W." }, ctx);
+    toolAsk({ topic: "T", section: "overview", kind: "fill", question: "Q ___", why: "W." }, ctx);
     answer(FOLDER, REPO, "hats");
-    const r = toolAsk({ topic: "T", kind: "fill", question: "Next ___", why: "W." }, ctx);
+    const r = toolAsk({ topic: "T", section: "overview", kind: "fill", question: "Next ___", why: "W." }, ctx);
     expect(r.error).toMatch(/first record the answer/);
   });
 
   it("the definition write completes the record phase", () => {
     runningState(docs);
-    toolAsk({ topic: "T", kind: "fill", question: "Q ___", why: "W." }, ctx);
+    toolAsk({ topic: "T", section: "overview", kind: "fill", question: "Q ___", why: "W." }, ctx);
     answer(FOLDER, REPO, "hats");
-    toolWriteDefinition({ markdown: "# Def" }, ctx);
+    toolWriteDefinition({ section: "overview", markdown: "# Def" }, ctx);
     expect((docs.docs[KEY] as any).stage).toBe("recorded");
   });
 
   it("after the record turn ends, the ask turn goes out WITH the wipe", () => {
     runningState(docs);
-    toolAsk({ topic: "T", kind: "fill", question: "Q ___", why: "W." }, ctx);
+    toolAsk({ topic: "T", section: "overview", kind: "fill", question: "Q ___", why: "W." }, ctx);
     answer(FOLDER, REPO, "hats");
-    toolWriteDefinition({ markdown: "# Def" }, ctx);
+    toolWriteDefinition({ section: "overview", markdown: "# Def" }, ctx);
     setHandlers({
       ...baseHandlers(docs),
       peckboard_session_events: () => ({
@@ -277,7 +278,7 @@ describe("answer", () => {
 
   it("a record turn that ends without writing is nudged to record", () => {
     runningState(docs);
-    toolAsk({ topic: "T", kind: "fill", question: "Q ___", why: "W." }, ctx);
+    toolAsk({ topic: "T", section: "overview", kind: "fill", question: "Q ___", why: "W." }, ctx);
     answer(FOLDER, REPO, "hats");
     setHandlers({
       ...baseHandlers(docs),
@@ -307,7 +308,7 @@ describe("answer", () => {
     };
     runningState(docs);
     setHandlers({ ...baseHandlers(docs), peckboard_session_events: tail });
-    toolAsk({ topic: "Purpose", kind: "fill", question: "The project is for ___", why: "W." }, ctx);
+    toolAsk({ topic: "Purpose", section: "overview", kind: "fill", question: "The project is for ___", why: "W." }, ctx);
     answer(FOLDER, REPO, "selling hats");
     expect((docs.docs[KEY] as any).last_seq).toBe(3);
 
@@ -333,7 +334,7 @@ describe("answer", () => {
     };
     runningState(docs);
     setHandlers({ ...baseHandlers(docs), peckboard_session_events: tail });
-    toolAsk({ topic: "Purpose", kind: "fill", question: "The project is for ___", why: "W." }, ctx);
+    toolAsk({ topic: "Purpose", section: "overview", kind: "fill", question: "The project is for ___", why: "W." }, ctx);
     answer(FOLDER, REPO, "selling hats");
     expect((docs.docs[KEY] as any).turn_open).toBe(1);
 
@@ -410,14 +411,15 @@ describe("answer", () => {
   it("refuses when no question is waiting", () => {
     expect(() => answer(FOLDER, REPO, "x")).toThrow(/no question waiting/);
   });
+
 });
 
 describe("project_planner_write_definition", () => {
   it("writes the file INTO the repo and pins the note", () => {
     runningState(docs);
-    toolAsk({ topic: "Purpose", kind: "fill", question: "For ___?", why: "W." }, ctx);
+    toolAsk({ topic: "Purpose", section: "overview", kind: "fill", question: "For ___?", why: "W." }, ctx);
     answer(FOLDER, REPO, "hats");
-    const r = toolWriteDefinition({ markdown: "# Def\n- sells hats", note: "Recorded the purpose" }, ctx);
+    const r = toolWriteDefinition({ section: "overview", markdown: "# Def\n- sells hats", note: "Recorded the purpose" }, ctx);
     expect(r.ok).toBe(true);
     expect(r.path).toBe("apps/web/PROJECT_DEFINITION.md");
     const write = hostCalls.find((c) => c.name === "peckboard_write_file");
@@ -425,6 +427,108 @@ describe("project_planner_write_definition", () => {
     const st = docs.docs[KEY] as any;
     expect(st.history[0].note).toBe("Recorded the purpose");
   });
+
+// The definition is split: the root holds purpose/goals + a generated index,
+// each section is its own file that depends on the root.
+describe("split definition", () => {
+  /** baseHandlers plus an in-memory repo filesystem. */
+  function fsHandlers(files: Record<string, string>) {
+    return {
+      ...baseHandlers(docs),
+      peckboard_read_file: ({ path }: any) => {
+        if (path === "apps/web/.git/HEAD") return { content: "ref: refs/heads/main\n" };
+        return path in files ? { content: files[path] } : { error: "file not found" };
+      },
+      peckboard_write_file: ({ path, content }: any) => {
+        files[path] = content;
+        return { ok: true };
+      },
+    };
+  }
+  const ROOT = "apps/web/PROJECT_DEFINITION.md";
+  const TECH = "apps/web/project-definition/technology.md";
+
+  it("writes a section into its own file with a depends-on header, and indexes it in the root", () => {
+    const files: Record<string, string> = {};
+    setHandlers(fsHandlers(files));
+    runningState(docs);
+    toolWriteDefinition({ section: "overview", markdown: "# Hats\n\n## Purpose\nSell hats." }, ctx);
+    const r = toolWriteDefinition(
+      { section: "technology", markdown: "- Rust + Axum: one binary.", summary: "Rust/Axum backend" },
+      ctx,
+    );
+    expect(r.path).toBe(TECH);
+    expect(files[TECH]).toMatch(/^# Technology\n/);
+    expect(files[TECH]).toContain("> Depends on: [PROJECT_DEFINITION.md](../PROJECT_DEFINITION.md)");
+    expect(files[TECH]).toContain("- Rust + Axum: one binary.");
+    expect(files[ROOT]).toContain("Sell hats.");
+    expect(files[ROOT]).toContain("- [Technology](project-definition/technology.md) — Rust/Axum backend");
+    expect(files[ROOT]).toContain("- Flows — not written yet");
+    // Re-writing the overview keeps the section summaries.
+    toolWriteDefinition({ section: "overview", markdown: "# Hats\n\n## Purpose\nSell hats online." }, ctx);
+    expect(files[ROOT]).toContain("Sell hats online.");
+    expect(files[ROOT]).toContain("— Rust/Axum backend");
+    // read_section returns exactly one file.
+    expect(toolReadSection({ section: "technology" }, ctx).content).toBe(files[TECH]);
+    expect(toolReadSection({ section: "flows" }, ctx).content).toBe(null);
+    expect(toolWriteDefinition({ markdown: "x" }, ctx).error).toMatch(/section is required/);
+  });
+
+  it("the record turn carries the index and only the slide's section", () => {
+    const files: Record<string, string> = {};
+    setHandlers(fsHandlers(files));
+    runningState(docs);
+    toolWriteDefinition({ section: "overview", markdown: "# Hats" }, ctx);
+    toolWriteDefinition({ section: "technology", markdown: "- TECH-BODY", summary: "s" }, ctx);
+    toolWriteDefinition({ section: "flows", markdown: "- FLOWS-BODY", summary: "s" }, ctx);
+    toolAsk({ topic: "DB", section: "technology", kind: "fill", question: "DB is ___", why: "W." }, ctx);
+    answer(FOLDER, REPO, "SQLite");
+    const prompt = hostCalls.filter((c) => c.name === "peckboard_dispatch_capture").pop()?.input.prompt;
+    expect(prompt).toContain("TECH-BODY");
+    expect(prompt).not.toContain("FLOWS-BODY");
+    expect(prompt).toContain("project-definition/flows.md"); // linked from the index
+  });
+
+  it("splits a legacy single-file definition on the session's first tool call, dropping nothing", () => {
+    const files: Record<string, string> = {
+      [ROOT]: "# Hats\n\n## Purpose\nSell hats.\n\n## Technology\n- Rust.\n\n## Branding\nRed.\n",
+    };
+    setHandlers(fsHandlers(files));
+    start(FOLDER, REPO, "mock:happy-path");
+    // start() runs in a page route, where core forbids writes: nothing is
+    // written, but the kickoff already gets the split INDEX, not the bodies.
+    expect(hostCalls.some((c) => c.name === "peckboard_write_file")).toBe(false);
+    const kickoff = hostCalls.find((c) => c.name === "peckboard_dispatch_capture")?.input.prompt;
+    expect(kickoff).toContain("(project-definition/technology.md)");
+    expect(kickoff).not.toContain("- Rust.");
+    expect(toolReadSection({ section: "technology" }, ctx).content).toContain("- Rust.");
+    // That tool call was the first write-capable context: the split landed.
+    expect(files[TECH]).toContain("- Rust.");
+    expect(files[TECH]).toContain("> Depends on:");
+    expect(files[ROOT]).toContain("Sell hats.");
+    expect(files[ROOT]).toContain("## Branding\nRed.");
+    expect(files[ROOT]).not.toContain("- Rust.");
+    expect(files[ROOT]).toContain("(project-definition/technology.md)");
+    const s = pageState(FOLDER, REPO);
+    expect(s.definition_files.map((f: any) => f.section)).toEqual([
+      "overview",
+      "users-stories",
+      "flows",
+      "architecture",
+      "technology",
+      "deployment-operations",
+      "open-questions",
+    ]);
+    expect(s.definition_files.find((f: any) => f.section === "technology").exists).toBe(true);
+    expect(s.definition_files.find((f: any) => f.section === "flows").exists).toBe(false);
+  });
+
+  it("ask refuses a slide without a section", () => {
+    runningState(docs);
+    const r = toolAsk({ topic: "T", kind: "fill", question: "Q ___", why: "W." }, ctx);
+    expect(r.error).toMatch(/section is required/);
+  });
+});
 });
 
 describe("project_planner_queue / finish", () => {
@@ -526,7 +630,7 @@ describe("session recovery", () => {
     expect(dispatches().map((c) => c.input.session_id)).toEqual([NEW]);
     expect(dispatches()[0].input.prompt).toContain("selling hats");
     // The new session drives the interview; the old one no longer does.
-    expect(toolWriteDefinition({ markdown: "# Def" }, { folderId: FOLDER, sessionId: NEW }).ok).toBe(true);
+    expect(toolWriteDefinition({ section: "overview", markdown: "# Def" }, { folderId: FOLDER, sessionId: NEW }).ok).toBe(true);
   });
 
   it("thinking before the first slide: the new session gets the kickoff", () => {
@@ -539,7 +643,7 @@ describe("session recovery", () => {
 
   it("waiting: the slide stays and the answer goes to the new session", () => {
     runningState(docs);
-    toolAsk({ topic: "Purpose", kind: "fill", question: "The project is for ___", why: "W." }, ctx);
+    toolAsk({ topic: "Purpose", section: "overview", kind: "fill", question: "The project is for ___", why: "W." }, ctx);
     setHandlers(goneHandlers());
     const s = pageState(FOLDER, REPO);
     expect(s.status).toBe("waiting");
@@ -555,7 +659,7 @@ describe("session recovery", () => {
 
   it("waiting: an answer sent before any poll noticed still reaches a new session", () => {
     runningState(docs);
-    toolAsk({ topic: "Purpose", kind: "fill", question: "The project is for ___", why: "W." }, ctx);
+    toolAsk({ topic: "Purpose", section: "overview", kind: "fill", question: "The project is for ___", why: "W." }, ctx);
     setHandlers(goneHandlers());
     expect(answer(FOLDER, REPO, "selling hats").ok).toBe(true);
     const st = docs.docs[KEY] as any;

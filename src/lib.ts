@@ -3,7 +3,7 @@
 
 import { skip, allow, cancel, errMsg } from "./verdict";
 import { serveHttp, serveAuthed } from "./http";
-import { toolAsk, toolFinish, toolQueue, toolWriteDefinition } from "./planner";
+import { toolAsk, toolFinish, toolQueue, toolReadSection, toolWriteDefinition } from "./planner";
 
 /// The agent-facing tools, keyed by the name declared in the manifest. Each
 /// takes the caller `context` as its second argument — core builds it from the
@@ -12,6 +12,7 @@ const TOOLS: Record<string, (args: any, context: any) => any> = {
   project_planner_ask: toolAsk,
   project_planner_queue: toolQueue,
   project_planner_write_definition: toolWriteDefinition,
+  project_planner_read_section: toolReadSection,
   project_planner_finish: toolFinish,
 };
 

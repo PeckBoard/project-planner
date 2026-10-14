@@ -45,6 +45,7 @@ describe("manifest", () => {
       "project_planner_ask",
       "project_planner_queue",
       "project_planner_write_definition",
+      "project_planner_read_section",
       "project_planner_finish",
     ]);
     for (const n of names) {
@@ -54,7 +55,7 @@ describe("manifest", () => {
 
   it("requires the ask tool's self-contained-slide fields", () => {
     const ask = manifest.mcp_tools.find((t: any) => t.name === "project_planner_ask");
-    expect(ask.input_schema.required).toEqual(["topic", "kind", "question", "why"]);
+    expect(ask.input_schema.required).toEqual(["topic", "section", "kind", "question", "why"]);
     expect(ask.input_schema.properties.kind.enum).toEqual(["choice", "fill"]);
   });
 });
