@@ -53,10 +53,14 @@ describe("manifest", () => {
     }
   });
 
-  it("requires the ask tool's self-contained-slide fields", () => {
+  it("asks a batch of 1 to 10 self-contained slides", () => {
     const ask = manifest.mcp_tools.find((t: any) => t.name === "project_planner_ask");
-    expect(ask.input_schema.required).toEqual(["topic", "section", "kind", "question", "why"]);
-    expect(ask.input_schema.properties.kind.enum).toEqual(["choice", "fill"]);
+    expect(ask.input_schema.required).toEqual(["questions"]);
+    const batch = ask.input_schema.properties.questions;
+    expect([batch.minItems, batch.maxItems]).toEqual([1, 10]);
+    expect(batch.items.required).toEqual(["topic", "section", "kind", "question", "why"]);
+    expect(batch.items.properties.kind.enum).toEqual(["choice", "fill"]);
+    expect(ask.description).toMatch(/never include a follow-up that depends on another question/);
   });
 });
 

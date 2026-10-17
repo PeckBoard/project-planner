@@ -10,7 +10,7 @@ describe("planner contract", () => {
 
   it("pins the one-slide, tool-only interaction model", () => {
     expect(SYSTEM_PROMPT).toContain("project_planner_ask");
-    expect(SYSTEM_PROMPT).toMatch(/one question at a time|one slide/i);
+    expect(SYSTEM_PROMPT).toMatch(/one batch of independent questions at a time/);
     expect(SYSTEM_PROMPT).toMatch(/understandable in a vacuum/);
   });
 
@@ -20,9 +20,9 @@ describe("planner contract", () => {
     expect(SYSTEM_PROMPT).toMatch(/code already answers/i);
     expect(SYSTEM_PROMPT).toMatch(/never treat the code's answer as final/i);
   });
-  it("requires a definition write after every answer", () => {
+  it("requires a definition write after every answered batch", () => {
     expect(SYSTEM_PROMPT).toContain("project_planner_write_definition");
-    expect(SYSTEM_PROMPT).toMatch(/After every answer/);
+    expect(SYSTEM_PROMPT).toMatch(/After every batch is answered/);
     expect(SYSTEM_PROMPT).toMatch(/ONE new requirement|one requirement/i);
   });
 
@@ -56,29 +56,43 @@ describe("planner contract", () => {
     expect(p).toMatch(/Generate 3 to 5 candidate topics from the definition/);
     expect(p).toMatch(/type a different topic/);
   });
-  it("record prompt carries the Q&A, the index, ONLY the named section, and forbids asking", () => {
+  it("record prompt carries every Q&A of the batch, the index, ONLY the named sections, and forbids asking", () => {
     const p = recordPrompt({
       repo: "apps/web",
-      question: "What is the goal?",
-      answer: "Sell hats",
-      section: "technology",
-      sectionContent: "# Technology\n- Rust",
+      answers: [
+        { question: "What is the goal?", answer: "Sell hats", section: "overview" },
+        { question: "Which language?", answer: "Rust", section: "technology" },
+        { question: "Which DB?", answer: "SQLite", section: "technology" },
+      ],
+      sections: { technology: "# Technology\n- Axum" },
       index: "# Def",
       pending: ["Who wears them?"],
     });
-    expect(p).toContain("What is the goal?");
-    expect(p).toContain("Sell hats");
+    expect(p).toMatch(/all 3 slides of the batch/);
+    for (const s of ["What is the goal?", "Sell hats", "Which language?", "Rust", "Which DB?", "SQLite"]) {
+      expect(p).toContain(s);
+    }
     expect(p).toContain("# Def");
-    expect(p).toContain("- Rust");
-    expect(p).toContain("apps/web/project-definition/technology.md");
+    expect(p).toContain("- Axum");
+    // Each named section's content appears once, however many answers hit it.
+    expect(p.split("apps/web/project-definition/technology.md").length).toBe(2);
+    expect(p).not.toContain("project-definition/users.md");
     expect(p).toContain("Who wears them?");
-    // The record turn runs WITH context and must stop after the write — the
-    // next question is asked from a wiped session in a separate turn.
-    expect(p).toContain("project_planner_write_definition");
+    // The record turn runs WITH context and must stop after the writes — the
+    // next batch is asked from a wiped session in a separate turn.
+    expect(p).toMatch(/for EACH section above call project_planner_write_definition ONCE/);
     expect(p).toMatch(/Do NOT call project_planner_ask/);
     expect(p).not.toMatch(/chat history was reset/);
   });
 
+  it("contract forbids batching a question that depends on another in the batch", () => {
+    expect(SYSTEM_PROMPT).toMatch(/BATCH of 1 to 10 slides/);
+    expect(SYSTEM_PROMPT).toMatch(/Never batch a follow-up to another question of the same batch/);
+    expect(SYSTEM_PROMPT).toMatch(/topic-choice slide always goes alone/);
+    const ask = askNextPrompt({ repo: ".", index: "# Def", pending: [] });
+    expect(ask).toMatch(/take it out and queue it/);
+    expect(ask).toContain("from_queue");
+  });
   it("ask prompt carries the index and announces the reset", () => {
     const p = askNextPrompt({ repo: ".", index: "# Def", pending: ["Who wears them?"] });
     expect(p).toContain("# Def");

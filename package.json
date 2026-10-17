@@ -1,8 +1,8 @@
 {
   "name": "peckboard-project-planner",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "private": true,
-  "description": "PeckBoard plugin: an interview-style slideshow that builds a project definition. An agent session asks one pointed question per slide — fill-in-the-blank or justified multiple choice, with diagrams — and writes each answer as a requirement into a split definition: PROJECT_DEFINITION.md (purpose, goals, section index) plus one file per section under project-definition/.",
+  "description": "PeckBoard plugin: an interview-style slideshow that builds a project definition. An agent session publishes batches of independent questions, one per slide — fill-in-the-blank or justified multiple choice, with diagrams — and, once a batch is answered, writes every answer as a requirement into a split definition: PROJECT_DEFINITION.md (purpose, goals, section index) plus one file per section under project-definition/.",
   "scripts": {
     "bundle": "node esbuild.js",
     "build": "node esbuild.js && extism-js dist/index.js -i src/index.d.ts -o dist/plugin.wasm",

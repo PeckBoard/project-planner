@@ -214,6 +214,54 @@ describe("project_planner_ask", () => {
     expect(st.slide.evidence).toMatch(/package.json/);
   });
 });
+describe("batches", () => {
+  beforeEach(() => runningState(docs));
+  const q = (question: string, section = "overview", extra: any = {}) => ({
+    topic: "T", section, kind: "fill", question, why: "W.", ...extra,
+  });
+
+  it("collects every answer of a batch, then dispatches ONE record turn with all of them", () => {
+    (docs.docs[KEY] as any).pending = ["Which DB?", "What should X do?"];
+    const r = toolAsk(
+      { questions: [q("Purpose is ___"), q("The DB is ___", "technology", { from_queue: "Which DB?" })] },
+      ctx,
+    );
+    expect(r.ok).toBe(true);
+    let st = docs.docs[KEY] as any;
+    expect(st.slide.batch_index).toBe(1);
+    expect(st.slide.batch_size).toBe(2);
+    // The asked queue entry left the queue; the dependent one stays.
+    expect(st.pending).toEqual(["What should X do?"]);
+
+    setHandlers(baseHandlers(docs));
+    answer(FOLDER, REPO, "selling hats");
+    st = docs.docs[KEY] as any;
+    expect(st.status).toBe("waiting");
+    expect(st.slide.question).toBe("The DB is ___");
+    expect(st.slide.slide_no).toBe(2);
+    expect(hostCalls.some((c) => c.name === "peckboard_dispatch_capture")).toBe(false);
+
+    answer(FOLDER, REPO, "SQLite");
+    st = docs.docs[KEY] as any;
+    expect(st.status).toBe("thinking");
+    expect(st.stage).toBe("record");
+    expect(st.history.map((h: any) => h.answer)).toEqual(["selling hats", "SQLite"]);
+    const dispatches = hostCalls.filter((c) => c.name === "peckboard_dispatch_capture");
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0].input.prompt).toContain("selling hats");
+    expect(dispatches[0].input.prompt).toContain("SQLite");
+    expect(dispatches[0].input.prompt).toMatch(/all 2 slides of the batch/);
+  });
+
+  it("rejects an oversized batch and names the bad question", () => {
+    const big = Array.from({ length: 11 }, (_, i) => q(`Q${i} ___`));
+    expect(toolAsk({ questions: big }, ctx).error).toMatch(/1 to 10 questions/);
+    const r = toolAsk({ questions: [q("Fine ___"), { ...q("Bad ___"), why: "" }] }, ctx);
+    expect(r.error).toMatch(/^question 2: why is required/);
+    expect((docs.docs[KEY] as any).status).toBe("thinking");
+  });
+});
+
 
 describe("answer", () => {
   it("record turn: appends history and dispatches the answer WITHOUT a wipe", () => {

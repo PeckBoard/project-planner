@@ -19,6 +19,8 @@ import {
   writeFile,
 } from "./host";
 import {
+  type BatchAnswer,
+  MAX_BATCH,
   SYSTEM_PROMPT,
   askNextPrompt,
   kickoffPrompt,
@@ -89,6 +91,13 @@ export interface Slide {
   /** Definition section the answer is recorded in (see sections.ts); null
    * on slides published before the definition was split. */
   section: string | null;
+  /** Position in its batch (1-based) and the batch's size; absent on slides
+   * published before batching. */
+  batch_index?: number;
+  batch_size?: number;
+  /** The exact queue entry this slide asks, removed from the queue on
+   * publish. */
+  from_queue?: string | null;
 }
 
 export interface HistoryEntry {
@@ -132,6 +141,12 @@ export interface PlannerState {
   /** Replacement sessions created since the last published slide (see
    * recoverSession). */
   recoveries: number;
+  /** The rest of the published batch, after `slide`. Absent on state saved
+   * before batching. */
+  upcoming?: Slide[];
+  /** Answers given so far in the current batch; the record turn gets them
+   * all at once. */
+  batch_answers?: HistoryEntry[];
 }
 
 export function emptyState(): PlannerState {
@@ -154,6 +169,8 @@ export function emptyState(): PlannerState {
     wipe_seq: null,
     wipe_at: null,
     recoveries: 0,
+    upcoming: [],
+    batch_answers: [],
   };
 }
 
@@ -245,23 +262,25 @@ function readSection(repo: string, id: string): string | null {
   return readFileOrNull(sectionPath(repo, id));
 }
 
-/** The record turn's prompt: the index plus ONLY the section the slide named. */
+/** The record turn's prompt: every answer of the batch, the index, and ONLY
+ * the sections those answers named. */
 function buildRecordPrompt(
   repo: string,
-  entry: { question: string; answer: string; section?: string | null },
+  entries: Array<{ question: string; answer: string; section?: string | null }>,
   pending: string[],
 ): string {
-  const section = isSection(entry.section) ? entry.section : null;
-  const index = loadIndex(repo);
-  return recordPrompt({
-    repo,
-    question: entry.question,
-    answer: entry.answer,
-    section,
-    sectionContent: section && section !== OVERVIEW ? readSection(repo, section) : null,
-    index,
-    pending,
-  });
+  const answers: BatchAnswer[] = entries.map((e) => ({
+    question: e.question,
+    answer: e.answer,
+    section: isSection(e.section) ? e.section : null,
+  }));
+  const sections: Record<string, string | null> = {};
+  for (const a of answers) {
+    if (a.section && a.section !== OVERVIEW && !(a.section in sections)) {
+      sections[a.section] = readSection(repo, a.section);
+    }
+  }
+  return recordPrompt({ repo, answers, sections, index: loadIndex(repo), pending });
 }
 function preview(content: string | null): string | null {
   return content !== null && content.length > MAX_DEFINITION_PREVIEW
@@ -488,7 +507,9 @@ export function start(
   return { ok: true };
 }
 
-/** The user answered the current slide of one repo's interview. */
+/** The user answered the current slide of one repo's interview. Mid-batch
+ * this only advances to the next slide; the batch's last answer dispatches
+ * ONE record turn carrying every answer of the batch. */
 export function answer(folderId: string, repoRaw: unknown, answerText: string): any {
   const repo = normalizeRepo(repoRaw);
   const state = loadState(folderId, repo);
@@ -498,6 +519,29 @@ export function answer(folderId: string, repoRaw: unknown, answerText: string): 
   const text = (answerText ?? "").toString().trim();
   if (!text) {
     throw new Error("the answer is empty");
+  }
+
+  const asked = state.slide;
+  const entry: HistoryEntry = {
+    topic: asked.topic,
+    question: asked.question,
+    answer: text,
+    section: asked.section ?? null,
+    note: null,
+  };
+  const history = [...state.history, entry].slice(-MAX_HISTORY);
+  const batchAnswers = [...(state.batch_answers ?? []), entry];
+  const upcoming = state.upcoming ?? [];
+  if (upcoming.length) {
+    // More slides in this batch: no agent run until the user is through.
+    saveState(folderId, repo, {
+      ...state,
+      slide: upcoming[0],
+      upcoming: upcoming.slice(1),
+      batch_answers: batchAnswers,
+      history,
+    });
+    return { ok: true };
   }
 
   // Consume the event tail BEFORE the record dispatch. The watchdog stops
@@ -516,11 +560,12 @@ export function answer(folderId: string, repoRaw: unknown, answerText: string): 
     // Unreadable tail: keep the old mark; settleRun retries on the next poll.
   }
 
-  const asked = state.slide;
   const next: PlannerState = {
     ...state,
     status: "thinking",
     slide: null,
+    upcoming: [],
+    batch_answers: batchAnswers,
     nudges: 0,
     last_seq: lastSeq,
     // A new dispatch: nothing has started for it yet. Runs still open (the
@@ -533,23 +578,17 @@ export function answer(folderId: string, repoRaw: unknown, answerText: string): 
     wipe_seq: null,
     wipe_at: null,
     // Phase 1 of the answer cycle: the RECORD turn runs with full context so
-    // the model still remembers asking the question (and any code check
-    // behind a proposed answer) while it folds the answer into the
+    // the model still remembers asking the questions (and any code check
+    // behind a proposed answer) while it folds the answers into the
     // definition. The context wipe happens between turns, when settleRun
     // dispatches the fresh ASK turn.
     stage: "record",
-    history: [
-      ...state.history,
-      { topic: asked.topic, question: asked.question, answer: text, section: asked.section ?? null, note: null },
-    ].slice(-MAX_HISTORY),
+    history,
   };
   saveState(folderId, repo, next);
 
   try {
-    dispatchCapture(
-      state.session_id,
-      buildRecordPrompt(repo, next.history[next.history.length - 1], next.pending),
-    );
+    dispatchCapture(state.session_id, buildRecordPrompt(repo, batchAnswers, next.pending));
   } catch (e) {
     if (isSessionGone(e)) {
       // The session vanished while the slide waited (e.g. a server restart's
@@ -643,8 +682,9 @@ function recoverSession(folderId: string, repo: string, state: PlannerState): Pl
   const last = next.history[next.history.length - 1];
   let prompt: string;
   if (next.stage === "record" && last) {
-    // The answer never reached a definition write: hand it over again.
-    prompt = buildRecordPrompt(repo, last, next.pending);
+    // The answers never reached a definition write: hand them over again.
+    const batch = next.batch_answers?.length ? next.batch_answers : [last];
+    prompt = buildRecordPrompt(repo, batch, next.pending);
   } else if (next.history.length === 0) {
     // Still on the kickoff (the chosen starting topic is not kept; the agent
     // asks for one).
@@ -895,34 +935,13 @@ function asString(v: unknown): string {
   return typeof v === "string" ? v.trim() : "";
 }
 
-/** project_planner_ask — validate and publish the next slide. */
-export function toolAsk(args: any, context: any): any {
-  const { folderId, repo, state } = plannerStateFor(context);
-  // One slide at a time IS the product: a second ask before the user answered
-  // would silently replace the showing slide and the interview would stop
-  // waiting for answers. Refuse so the model ends its turn instead.
-  if (state.status === "waiting") {
-    return {
-      error:
-        "a slide is already showing and unanswered — do not ask again; end your turn and wait " +
-        "for the user's answer to arrive as the next message",
-    };
-  }
-  // Mid answer-cycle the record turn must stay ask-free: the next question is
-  // asked from a wiped session (the ASK turn settleRun dispatches). A slide
-  // published now would skip that reset and grow the context unboundedly.
-  if (state.stage === "record" || state.stage === "recorded") {
-    return {
-      error:
-        "not yet — first record the answer via project_planner_write_definition, then END your " +
-        "turn; your context is reset and the next message asks you to pose the next question",
-    };
-  }
-  const kind = asString(args?.kind);
-  const question = asString(args?.question);
-  const why = asString(args?.why);
-  const topic = asString(args?.topic) || "Project";
-  const section = asString(args?.section);
+/** Validate one slide of a batch; an error string names what is wrong. */
+function parseSlide(raw: any): Omit<Slide, "slide_no" | "batch_index" | "batch_size"> | { error: string } {
+  const kind = asString(raw?.kind);
+  const question = asString(raw?.question);
+  const why = asString(raw?.why);
+  const topic = asString(raw?.topic) || "Project";
+  const section = asString(raw?.section);
   if (!isSection(section)) {
     return {
       error: `section is required — the definition section this answer is recorded in, one of: ${SECTION_IDS.join(", ")}`,
@@ -937,8 +956,8 @@ export function toolAsk(args: any, context: any): any {
   }
   let options: SlideOption[] = [];
   if (kind === "choice") {
-    const raw = Array.isArray(args?.options) ? args.options : [];
-    options = raw
+    const opts = Array.isArray(raw?.options) ? raw.options : [];
+    options = opts
       .map((o: any) => ({ label: asString(o?.label), detail: asString(o?.detail) }))
       .filter((o: SlideOption) => o.label);
     if (options.length < 2 || options.length > 5) {
@@ -951,8 +970,8 @@ export function toolAsk(args: any, context: any): any {
       };
     }
   }
-  const proposedAnswer = asString(args?.proposed_answer) || null;
-  const evidence = asString(args?.evidence) || null;
+  const proposedAnswer = asString(raw?.proposed_answer) || null;
+  const evidence = asString(raw?.evidence) || null;
   if (proposedAnswer && !evidence) {
     return {
       error:
@@ -960,25 +979,90 @@ export function toolAsk(args: any, context: any): any {
         "it, so the user can judge the conclusion",
     };
   }
-  const slide: Slide = {
-    slide_no: state.history.length + 1,
+  return {
     topic,
     kind,
     question,
     why,
     options,
-    multi: args?.multi === true,
-    blank_hint: asString(args?.blank_hint) || null,
-    diagram: asString(args?.diagram) || null,
+    multi: raw?.multi === true,
+    blank_hint: asString(raw?.blank_hint) || null,
+    diagram: asString(raw?.diagram) || null,
     proposed_answer: proposedAnswer,
     evidence: proposedAnswer ? evidence : null,
     section,
+    from_queue: asString(raw?.from_queue) || null,
   };
-  // A slide is progress: the session works, so the replacement budget refills.
-  saveState(folderId, repo, { ...state, status: "waiting", slide, nudges: 0, recoveries: 0 });
+}
+
+/** project_planner_ask — validate and publish the next batch of slides. */
+export function toolAsk(args: any, context: any): any {
+  const { folderId, repo, state } = plannerStateFor(context);
+  // The batch on screen IS the product: a second ask before the user answered
+  // would silently replace it and the interview would stop waiting for
+  // answers. Refuse so the model ends its turn instead.
+  if (state.status === "waiting") {
+    return {
+      error:
+        "slides are already showing and unanswered — do not ask again; end your turn and wait " +
+        "for the user's answers to arrive as the next message",
+    };
+  }
+  // Mid answer-cycle the record turn must stay ask-free: the next batch is
+  // asked from a wiped session (the ASK turn settleRun dispatches). Slides
+  // published now would skip that reset and grow the context unboundedly.
+  if (state.stage === "record" || state.stage === "recorded") {
+    return {
+      error:
+        "not yet — first record the answers via project_planner_write_definition, then END your " +
+        "turn; your context is reset and the next message asks you to pose the next questions",
+    };
+  }
+  // `questions` carries the batch; a bare single slide (the pre-batch shape)
+  // is a batch of one.
+  const raws: any[] = Array.isArray(args?.questions) ? args.questions : [args];
+  if (raws.length < 1 || raws.length > MAX_BATCH) {
+    return { error: `a batch holds 1 to ${MAX_BATCH} questions` };
+  }
+  const parsed: Array<Omit<Slide, "slide_no" | "batch_index" | "batch_size">> = [];
+  for (const [i, raw] of raws.entries()) {
+    const p = parseSlide(raw);
+    if ("error" in p) {
+      return { error: raws.length > 1 ? `question ${i + 1}: ${p.error}` : p.error };
+    }
+    parsed.push(p);
+  }
+  const seen = new Set<string>();
+  for (const p of parsed) {
+    const key = p.question.toLowerCase();
+    if (seen.has(key)) return { error: `the batch asks '${p.question}' twice` };
+    seen.add(key);
+  }
+  const slides: Slide[] = parsed.map((p, i) => ({
+    ...p,
+    slide_no: state.history.length + i + 1,
+    batch_index: i + 1,
+    batch_size: parsed.length,
+  }));
+  // Queue entries a slide asks leave the queue now that they are asked.
+  const asked = new Set(slides.map((s) => s.from_queue).filter(Boolean));
+  const pending = state.pending.filter((q) => !asked.has(q));
+  // A batch is progress: the session works, so the replacement budget refills.
+  saveState(folderId, repo, {
+    ...state,
+    status: "waiting",
+    slide: slides[0],
+    upcoming: slides.slice(1),
+    batch_answers: [],
+    pending,
+    nudges: 0,
+    recoveries: 0,
+  });
   return {
     ok: true,
-    note: "The slide is showing. End your turn now — the user's answer arrives as the next message.",
+    note:
+      `${slides.length === 1 ? "The slide is" : `All ${slides.length} slides are`} showing. End ` +
+      "your turn now — the user's answers arrive together as the next message.",
   };
 }
 

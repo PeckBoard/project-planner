@@ -38,8 +38,8 @@ agent  MUST             project_planner_write_definition  (one section, one req 
 
 | Tool | Effect |
 |---|---|
-| `project_planner_ask` | Publish one slide (names its `section`); `status = waiting` |
-| `project_planner_queue` | Add/remove pending follow-ups |
+| `project_planner_ask` | Publish a batch of 1-10 independent slides (each names its `section`; `from_queue` drops the queue entry it asks); `status = waiting` until the last is answered |
+| `project_planner_queue` | Add/remove pending follow-ups (questions that depend on an answer not given yet) |
 | `project_planner_write_definition` | Write ONE section (`overview` = root file) + regenerate the root index; does **not** leave thinking |
 | `project_planner_read_section` | Return one section file's content (on demand) |
 | `project_planner_finish` | `status = done` + summary |

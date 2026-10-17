@@ -579,7 +579,7 @@ function startScreen() {
 function thinkingScreen() {
   const card = el("div", "card center");
   card.appendChild(
-    el("h1", "", state.answered > 0 ? "Generating the next question…" : "Preparing the first question…"),
+    el("h1", "", state.answered > 0 ? "Recording your answers, then the next questions…" : "Preparing the first questions…"),
   );
   const dots = el("div", "dots");
   for (let i = 0; i < 3; i++) dots.appendChild(el("i"));
@@ -618,6 +618,12 @@ function slideScreen() {
   const head = el("div", "card-head");
   head.appendChild(el("span", "topic-chip", s.topic));
   head.appendChild(el("span", "slide-no", "Slide " + s.slide_no));
+  // Mid-batch: how many questions are left before the agent runs again.
+  if (s.batch_size > 1) {
+    head.appendChild(
+      el("span", "batch-progress", "Question " + s.batch_index + " of " + s.batch_size),
+    );
+  }
   if (state.pending_count > 0) {
     head.appendChild(
       el("span", "queue-badge", state.pending_count + " queued"),
@@ -725,8 +731,10 @@ function slideScreen() {
   card.appendChild(err);
 
   const actions = el("div", "actions");
-  const submit = el("button", "primary-btn", "Submit answer");
-  submit.onclick = () => send(getAnswer(), submit, "Sending…", "Submit answer");
+  // Mid-batch the answer just moves on; the last one hands the batch over.
+  const submitLabel = s.batch_index < s.batch_size ? "Next question" : "Submit answer";
+  const submit = el("button", "primary-btn", submitLabel);
+  submit.onclick = () => send(getAnswer(), submit, "Sending…", submitLabel);
   actions.appendChild(submit);
   actions.appendChild(
     el(

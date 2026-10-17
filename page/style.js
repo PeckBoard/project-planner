@@ -164,6 +164,14 @@ body {
   padding: 4px 12px;
 }
 .slide-no { font-size: 12px; color: var(--text-3); }
+.batch-progress {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: 999px;
+  padding: 3px 10px;
+}
 .queue-badge {
   margin-left: auto;
   font-size: 12px;

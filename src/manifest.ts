@@ -6,10 +6,12 @@ const DESCRIPTION =
   "Project Planner: build a project definition file by interview, per git " +
   "repo. Pick a repo (a folder can hold several); a slideshow then asks one " +
   "pointed question per slide — fill-in-the-blank or multiple choice with " +
-  "every option justified, plus small diagrams — generated one after another " +
-  "by a dedicated agent session. When the repo's code already answers a " +
-  "question, the slide proposes that answer with evidence for one-click " +
-  "confirmation. Each answer is written as a requirement into the repo's split " +
+  "every option justified, plus small diagrams — in batches of up to 10 " +
+  "independent questions from a dedicated agent session; a follow-up that " +
+  "depends on an open answer waits for a later batch. When the repo's code already " +
+  "answers a question, the slide proposes that answer with evidence for one-click " +
+  "confirmation. Once a batch is answered, one run writes every answer as a " +
+  "requirement into the repo's split " +
   "definition: PROJECT_DEFINITION.md holds purpose, goals and an index linking one " +
   "file per section under project-definition/, so each question reads only what it " +
   "needs. An existing definition is read first (a single-file one is split) and the " +
@@ -19,6 +21,7 @@ const DESCRIPTION =
 // a manifest that self-reports an old version makes the registry's
 // "upgrade available" chip permanent (0.3.0 shipped that way).
 import { version as VERSION } from "../package.json";
+import { MAX_BATCH } from "./prompt";
 import { SECTION_IDS } from "./sections";
 
 const REPOSITORY = "https://github.com/peckboard/project-planner";
@@ -30,6 +33,92 @@ const ICON =
   '<path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/>' +
   '<path d="M12 11h4"/><path d="M12 16h4"/><path d="M8 11h.01"/><path d="M8 16h.01"/></svg>';
 
+// One slide of a project_planner_ask batch.
+const SLIDE_SCHEMA = {
+  type: "object",
+  properties: {
+    section: {
+      type: "string",
+      enum: SECTION_IDS,
+      description:
+        "The definition section this question's answer will be recorded in. 'overview' = " +
+        "purpose and goals (and the starting-topic slide).",
+    },
+    topic: {
+      type: "string",
+      description: "Short area label for the slide chip, e.g. 'Purpose', 'Users', 'Database', 'Deployment'.",
+    },
+    kind: {
+      type: "string",
+      enum: ["choice", "fill"],
+      description: "choice = multiple choice; fill = fill-in-the-blank.",
+    },
+    question: {
+      type: "string",
+      description:
+        "The one question, in simple language, no lists, self-contained. For 'fill', write " +
+        "the sentence with a ___ where the blank goes.",
+    },
+    why: {
+      type: "string",
+      description:
+        "One or two plain sentences justifying the problem: what this decides and why it " +
+        "matters for THIS project. Shown on the slide.",
+    },
+    options: {
+      type: "array",
+      description:
+        "For kind 'choice': 2-5 options. Each label is short; each detail is one sentence " +
+        "justifying the option and naming its trade-off, so options can be compared.",
+      items: {
+        type: "object",
+        properties: {
+          label: { type: "string" },
+          detail: { type: "string" },
+        },
+        required: ["label", "detail"],
+        additionalProperties: false,
+      },
+    },
+    multi: {
+      type: "boolean",
+      description: "For kind 'choice': allow picking more than one option. Default false.",
+    },
+    blank_hint: {
+      type: "string",
+      description: "For kind 'fill': a short example answer shown as the input placeholder.",
+    },
+    diagram: {
+      type: "string",
+      description:
+        "Optional small mermaid source (flowchart or sequence, at most ~12 nodes) picturing " +
+        "the problem or the options. Omit when it would not help.",
+    },
+    proposed_answer: {
+      type: "string",
+      description:
+        "When the folder's existing code already answers this question: the conclusion the " +
+        "code supports, phrased as the answer. The slide shows it with a one-click Confirm " +
+        "and the user may correct it instead. For 'choice', match an option label when one " +
+        "fits. Requires `evidence`. Omit when the code is silent — never propose a guess.",
+    },
+    evidence: {
+      type: "string",
+      description:
+        "Required with proposed_answer: one plain sentence naming where the code shows it, " +
+        "e.g. 'Cargo.toml declares Axum with Diesel/SQLite'. Shown to the user under the " +
+        "proposal so they can judge it.",
+    },
+    from_queue: {
+      type: "string",
+      description:
+        "When this question asks a pending-queue entry: that exact entry. It leaves the " +
+        "queue when the batch is published.",
+    },
+  },
+  required: ["topic", "section", "kind", "question", "why"],
+  additionalProperties: false,
+};
 export function manifestJson(): string {
   const manifest = {
     description: DESCRIPTION,
@@ -88,102 +177,40 @@ export function manifestJson(): string {
       {
         name: "project_planner_ask",
         description:
-          "Show the user the next slide of the project-planning interview: exactly ONE pointed " +
-          "question, either fill-in-the-blank or multiple choice. Options must each carry a short " +
-          "justification (why one would pick it, and its trade-off). Include `why` — one or two " +
-          "plain sentences that justify the problem this question settles, so the slide is " +
-          "understandable on its own. Optionally attach a small mermaid diagram that pictures the " +
-          "problem or the compared options. After calling this, END YOUR TURN — the user's answer " +
-          "arrives as the next message.",
+          `Show the user the next BATCH of the project-planning interview: 1 to ${MAX_BATCH} slides, ` +
+          "each with exactly ONE pointed question, either fill-in-the-blank or multiple choice. The " +
+          "user answers them one after another and all answers arrive together as the next message. " +
+          "Every question in the batch must make sense whatever the user answers to the others: " +
+          "never include a follow-up that depends on another question of the same batch (queue it " +
+          "with project_planner_queue instead). Options must each carry a short justification (why " +
+          "one would pick it, and its trade-off). Include `why` — one or two plain sentences that " +
+          "justify the problem the question settles, so each slide is understandable on its own. " +
+          "Optionally attach a small mermaid diagram that pictures the problem or the compared " +
+          "options. After calling this, END YOUR TURN.",
         input_schema: {
           type: "object",
           properties: {
-            section: {
-              type: "string",
-              enum: SECTION_IDS,
-              description:
-                "The definition section this question's answer will be recorded in. 'overview' = " +
-                "purpose and goals (and the starting-topic slide).",
-            },
-            topic: {
-              type: "string",
-              description:
-                "Short area label for the slide chip, e.g. 'Purpose', 'Users', 'Database', 'Deployment'.",
-            },
-            kind: {
-              type: "string",
-              enum: ["choice", "fill"],
-              description: "choice = multiple choice; fill = fill-in-the-blank.",
-            },
-            question: {
-              type: "string",
-              description:
-                "The one question, in simple language, no lists, self-contained. For 'fill', write " +
-                "the sentence with a ___ where the blank goes.",
-            },
-            why: {
-              type: "string",
-              description:
-                "One or two plain sentences justifying the problem: what this decides and why it " +
-                "matters for THIS project. Shown on the slide.",
-            },
-            options: {
+            questions: {
               type: "array",
-              description:
-                "For kind 'choice': 2-5 options. Each label is short; each detail is one sentence " +
-                "justifying the option and naming its trade-off, so options can be compared.",
-              items: {
-                type: "object",
-                properties: {
-                  label: { type: "string" },
-                  detail: { type: "string" },
-                },
-                required: ["label", "detail"],
-                additionalProperties: false,
-              },
-            },
-            multi: {
-              type: "boolean",
-              description: "For kind 'choice': allow picking more than one option. Default false.",
-            },
-            blank_hint: {
-              type: "string",
-              description: "For kind 'fill': a short example answer shown as the input placeholder.",
-            },
-            diagram: {
-              type: "string",
-              description:
-                "Optional small mermaid source (flowchart or sequence, at most ~12 nodes) picturing " +
-                "the problem or the options. Omit when it would not help.",
-            },
-            proposed_answer: {
-              type: "string",
-              description:
-                "When the folder's existing code already answers this question: the conclusion the " +
-                "code supports, phrased as the answer. The slide shows it with a one-click Confirm " +
-                "and the user may correct it instead. For 'choice', match an option label when one " +
-                "fits. Requires `evidence`. Omit when the code is silent — never propose a guess.",
-            },
-            evidence: {
-              type: "string",
-              description:
-                "Required with proposed_answer: one plain sentence naming where the code shows it, " +
-                "e.g. 'Cargo.toml declares Axum with Diesel/SQLite'. Shown to the user under the " +
-                "proposal so they can judge it.",
+              minItems: 1,
+              maxItems: MAX_BATCH,
+              description: "The batch: mutually independent questions, shown in this order.",
+              items: SLIDE_SCHEMA,
             },
           },
-          required: ["topic", "section", "kind", "question", "why"],
+          required: ["questions"],
           additionalProperties: false,
         },
       },
       {
         name: "project_planner_queue",
         description:
-          "Save follow-up questions for later instead of asking them now. Use this when a topic is " +
-          "too complex for one slide: split it and queue the parts. Each entry is one short line " +
-          "describing a question still to be asked. The current queue is shown to you with every " +
-          "answer; pick the most valuable entry next and remove entries you have asked or that " +
-          "answers made moot by passing `remove`.",
+          "Save follow-up questions for a later batch instead of asking them now. Use this for a " +
+          "question that depends on the answer to another question still open (e.g. 'what should X " +
+          "do' while 'X or Y' is unanswered), or for parts of a topic too complex for one batch. " +
+          "Each entry is one short line describing a question still to be asked. The current queue " +
+          "is shown to you every turn; remove entries that answers made moot by passing `remove` " +
+          "(entries a published slide names in from_queue are removed for you).",
         input_schema: {
           type: "object",
           properties: {

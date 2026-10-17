@@ -1,10 +1,14 @@
 # Project Planner (Peckboard Plugin)
 
-Builds a project definition by interview. A slideshow asks one pointed
-question per slide — fill-in-the-blank or multiple choice with every option
-justified, plus small diagrams — each generated after the last by the same
-agent session. Every answer is written as a requirement into the repo's split
-definition (see below).
+Builds a project definition by interview. The agent publishes a batch of up
+to 10 mutually independent questions; a slideshow shows them one per slide —
+fill-in-the-blank or multiple choice with every option justified, plus small
+diagrams. The user answers the whole batch with no agent run in between, then
+ONE record run writes every answer as a requirement into the repo's split
+definition (see below) and the next batch is generated.
+
+- **id**: `project-planner`
+- **repository**: <https://github.com/peckboard/project-planner>
 
 ## The Split Definition
 
@@ -26,16 +30,13 @@ project-definition/
   `> Depends on:` header linking back, so content may never contradict the
   root's Purpose and Goals.
 - Each prompt carries only the root (small). The record turn also carries
-  the ONE section the slide named (`project_planner_ask.section`); anything
-  else the agent needs it fetches with `project_planner_read_section`.
+  the sections the batch's slides named (`section` per slide); anything else
+  the agent needs it fetches with `project_planner_read_section`.
 - A legacy single-file `PROJECT_DEFINITION.md` is split on the next start by
   its `##` headings; unrecognised headings stay in the overview, nothing is
   dropped.
 - The page's "View definition" panel lists every file (root first) as tabs;
   index links switch tabs.
-
-- **id**: `project-planner`
-- **repository**: <https://github.com/peckboard/project-planner>
 
 ## How It Works
 
@@ -44,23 +45,23 @@ page (sandboxed iframe)          plugin (wasm)                agent session
 POST /start ───────────────────▶ create temp session
                                  + planner system prompt
                                  + kickoff dispatch ─────────▶ gets root index + queue
-GET /state (poll) ◀───────────── store: waiting ◀──────────── project_planner_ask (one slide + section)
-render slide, user answers
-POST /answer ──────────────────▶ dispatch answer ───────────▶ project_planner_write_definition
-                                 (root + that section)        (ONE section; ONE requirement)
-                                                              project_planner_read_section (on demand)
-                                                              project_planner_queue (split
-                                                              complex topics, prune)
-                                                              project_planner_ask (next) …
+GET /state (poll) ◀───────────── store: waiting ◀──────────── project_planner_ask (batch of 1-10)
+render slide 1..N; each
+POST /answer advances locally
+last POST /answer ─────────────▶ ONE record dispatch ───────▶ project_planner_write_definition
+                                 (all answers + their         (once per named section)
+                                 sections)                    project_planner_queue (follow-ups)
+                                 wipe + ask dispatch ────────▶ project_planner_ask (next batch) …
                                                               project_planner_finish (done)
 ```
 
+Two agent turns per batch (record, then ask from a wiped session) instead of
+two per question.
+
 Session events are payload-slim (`{seq, kind, name}`), so the agent's output
 only reaches the plugin through the five MCP tools above. The slim tail is
-Session events are payload-slim (`{seq, kind, name}`), so the agent's output
-only reaches the plugin through the four MCP tools above. The slim tail is
 used for one thing: a watchdog that nudges a run that ended without asking
-(twice), then fails the interview with an explicit message.
+or recording (twice), then fails the interview with an explicit message.
 
 ## The Contract (Why the Questions Stay Good)
 
@@ -68,27 +69,31 @@ The session's system prompt (`src/prompt.ts`) pins:
 
 - Purpose and goal first — no architecture / tools / database / deployment /
   user-story questions until they are recorded in the definition.
+- Batches hold only independent questions: each must make sense whatever the
+  user answers to the others. A follow-up that depends on an open question
+  ("what should X do" while "X or Y" is unanswered) goes to the queue
+  (`project_planner_queue`); a later batch asks it — via `from_queue`, which
+  drops the entry — only if the answer kept it relevant. A topic-choice slide
+  always goes alone.
 - One pointed question per slide, simple language, no lists, understandable
   in a vacuum (`why` carries the problem's justification).
 - Choice options each carry a one-sentence justification naming a trade-off,
   so options compare; fill-in-the-blank slides phrase the sentence with `___`.
-- Complex topics split into queued follow-ups (`project_planner_queue`); the
-- After every answer, ONE section is rewritten with exactly one requirement
-  added or amended; the root index is regenerated with its summary.
+- After every batch, each named section is rewritten once, with one
+  requirement added or amended per answer; the root index is regenerated.
 - An existing definition's root index is read into the kickoff prompt and
-  the interview continues from it.
-  exist) is a choice slide offering 3–5 topics it generates from the
-  definition — thin sections, open questions — with free text as the escape.
-- Context stays small: definition + queue arrive with every message, so the
-  session never re-reads files or explores the repo.
+  the interview continues from it. Without a chosen starting topic, the first
+  slide after purpose and goal offers 3–5 topics generated from the
+  definition, with free text as the escape.
 - Context stays small: the root index + queue arrive with every message;
   section bodies only when a turn needs them.
 
-- `folder_items` / `project_items` / `session_items` page (never a global
-  `sidebar_items` entry — a global page carries no scope header, and every
-  route here is folder-scoped).
-- `ui_routes`: `GET state`, `POST start`, `POST answer`, `POST reset` under
-  `/api/plugin-ui/project-planner/`.
+## Surfaces
+
+- A repo-scoped `folder_items` page (never a global `sidebar_items` entry — a
+  global page carries no scope header, and every route here is folder-scoped).
+- `ui_routes`: `GET repos`, `GET state`, `POST start`, `POST answer`,
+  `POST reset` under `/api/plugin-ui/project-planner/`.
 - Diagrams: the slide's optional mermaid source renders via CDN mermaid when
   reachable and falls back to a styled text block offline.
 
@@ -96,10 +101,11 @@ The session's system prompt (`src/prompt.ts`) pins:
 
 ```bash
 ./build.sh          # → dist/plugin.wasm (needs extism-js + node)
-npm test            # vitest: manifest, contract, state machine, ffi, markdown
+npm test            # vitest: manifest, contract, state machine, split layout, ffi, markdown
 ```
 
-npm test            # vitest: manifest, contract, state machine, split layout, ffi, markdown
-(or via the registry once published) and approving the hooks + permissions in
-Settings → Plugins. E2e coverage lives in
-`web/e2e/tests/project-planner.spec.ts`.
+Install by staging `dist/plugin.wasm` (or via the registry once published)
+and approving the hooks + permissions in Settings → Plugins. E2e coverage
+lives in `web/e2e/tests/project-planner.spec.ts`. Pushing a new
+`package.json` version to `main` publishes `project-planner.wasm` on release
+`v<version>` (`.github/workflows/release.yml`).
