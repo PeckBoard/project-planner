@@ -167,6 +167,7 @@ export function manifestJson(): string {
       "GET /api/plugin-ui/project-planner/state",
       "POST /api/plugin-ui/project-planner/start",
       "POST /api/plugin-ui/project-planner/answer",
+      "POST /api/plugin-ui/project-planner/back",
       "POST /api/plugin-ui/project-planner/reset",
     ],
 

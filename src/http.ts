@@ -8,7 +8,7 @@
 
 import { htmlResponse, jsonResponse, errMsg } from "./verdict";
 import { PAGE } from "./page";
-import { answer, pageState, repoList, requireFolder, reset, start } from "./planner";
+import { answer, back, pageState, repoList, requireFolder, reset, start } from "./planner";
 
 const PAGE_PATH = "/plugin-api/v1/project-planner";
 const API = "/api/plugin-ui/project-planner";
@@ -74,6 +74,10 @@ export function serveAuthed(payload: any): string {
     if (method === "POST" && path === `${API}/answer`) {
       const b = parseBody(body);
       return jsonResponse(200, answer(folderId, b?.repo, str(b?.answer)));
+    }
+    if (method === "POST" && path === `${API}/back`) {
+      const b = parseBody(body);
+      return jsonResponse(200, back(folderId, b?.repo));
     }
     if (method === "POST" && path === `${API}/reset`) {
       const b = parseBody(body);

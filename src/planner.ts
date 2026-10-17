@@ -98,6 +98,9 @@ export interface Slide {
   /** The exact queue entry this slide asks, removed from the queue on
    * publish. */
   from_queue?: string | null;
+  /** The answer the user gave before stepping back to this slide — the
+   * page prefills it. */
+  previous_answer?: string | null;
 }
 
 export interface HistoryEntry {
@@ -147,6 +150,9 @@ export interface PlannerState {
   /** Answers given so far in the current batch; the record turn gets them
    * all at once. */
   batch_answers?: HistoryEntry[];
+  /** The batch's already-answered slides, in order, so the user can step
+   * back to one (parallel to `batch_answers`). */
+  answered_slides?: Slide[];
 }
 
 export function emptyState(): PlannerState {
@@ -171,6 +177,7 @@ export function emptyState(): PlannerState {
     recoveries: 0,
     upcoming: [],
     batch_answers: [],
+    answered_slides: [],
   };
 }
 
@@ -539,6 +546,7 @@ export function answer(folderId: string, repoRaw: unknown, answerText: string): 
       slide: upcoming[0],
       upcoming: upcoming.slice(1),
       batch_answers: batchAnswers,
+      answered_slides: [...(state.answered_slides ?? []), asked],
       history,
     });
     return { ok: true };
@@ -566,6 +574,7 @@ export function answer(folderId: string, repoRaw: unknown, answerText: string): 
     slide: null,
     upcoming: [],
     batch_answers: batchAnswers,
+    answered_slides: [],
     nudges: 0,
     last_seq: lastSeq,
     // A new dispatch: nothing has started for it yet. Runs still open (the
@@ -612,6 +621,32 @@ export function answer(folderId: string, repoRaw: unknown, answerText: string): 
 /** Drop one repo's interview state (its definition file stays). */
 export function reset(folderId: string, repoRaw: unknown): any {
   saveState(folderId, normalizeRepo(repoRaw), emptyState());
+  return { ok: true };
+}
+
+/** Step back to the previous slide of the current batch: its answer is
+ * withdrawn (and offered as the prefill) and the slide showing now returns to
+ * the front of the batch. Nothing reaches the agent — the batch is still
+ * only recorded once its last slide is answered. */
+export function back(folderId: string, repoRaw: unknown): any {
+  const repo = normalizeRepo(repoRaw);
+  const state = loadState(folderId, repo);
+  const answered = state.answered_slides ?? [];
+  const answers = state.batch_answers ?? [];
+  if (state.status !== "waiting" || !state.slide || !answered.length || !answers.length) {
+    throw new Error("there is no earlier question in this batch to go back to");
+  }
+  const prev = answered[answered.length - 1];
+  const withdrawn = answers[answers.length - 1];
+  saveState(folderId, repo, {
+    ...state,
+    slide: { ...prev, previous_answer: withdrawn.answer },
+    upcoming: [{ ...state.slide, previous_answer: null }, ...(state.upcoming ?? [])],
+    answered_slides: answered.slice(0, -1),
+    batch_answers: answers.slice(0, -1),
+    // The withdrawn answer was appended last; drop exactly that entry.
+    history: state.history.length ? state.history.slice(0, -1) : state.history,
+  });
   return { ok: true };
 }
 
@@ -1054,6 +1089,7 @@ export function toolAsk(args: any, context: any): any {
     slide: slides[0],
     upcoming: slides.slice(1),
     batch_answers: [],
+    answered_slides: [],
     pending,
     nudges: 0,
     recoveries: 0,

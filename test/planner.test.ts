@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { docStore, hostCalls, setHandlers } from "./fakeHost";
 import {
   answer,
+  back,
   definitionPath,
   discoverRepos,
   emptyState,
@@ -259,6 +260,28 @@ describe("batches", () => {
     const r = toolAsk({ questions: [q("Fine ___"), { ...q("Bad ___"), why: "" }] }, ctx);
     expect(r.error).toMatch(/^question 2: why is required/);
     expect((docs.docs[KEY] as any).status).toBe("thinking");
+  });
+
+  it("back withdraws the previous answer, prefills it, and keeps the batch intact", () => {
+    toolAsk({ questions: [q("A ___"), q("B ___"), q("C ___")] }, ctx);
+    expect(() => back(FOLDER, REPO)).toThrow(/no earlier question/);
+    answer(FOLDER, REPO, "first");
+    answer(FOLDER, REPO, "second");
+    setHandlers(baseHandlers(docs));
+    back(FOLDER, REPO);
+    let st = docs.docs[KEY] as any;
+    expect(st.slide.question).toBe("B ___");
+    expect(st.slide.previous_answer).toBe("second");
+    expect(st.upcoming.map((s: any) => s.question)).toEqual(["C ___"]);
+    expect(st.history.map((h: any) => h.answer)).toEqual(["first"]);
+    answer(FOLDER, REPO, "second, revised");
+    answer(FOLDER, REPO, "third");
+    st = docs.docs[KEY] as any;
+    expect(st.history.map((h: any) => h.answer)).toEqual(["first", "second, revised", "third"]);
+    const dispatches = hostCalls.filter((c) => c.name === "peckboard_dispatch_capture");
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0].input.prompt).toContain("second, revised");
+    expect(dispatches[0].input.prompt).not.toMatch(/Answer: second\n/);
   });
 });
 

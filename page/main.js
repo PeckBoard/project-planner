@@ -600,9 +600,27 @@ function updateThinkingNote() {
 function slideScreen() {
   const s = state.slide;
   const isNewSlide = chosenGuard(s);
-  // A confirmed-or-corrected slide starts prefilled with what the code
-  // suggests, so Confirm and Submit agree until the user changes something.
-  if (isNewSlide && s.proposed_answer) {
+  // A slide the user stepped back to starts with the answer they gave;
+  // otherwise a confirmed-or-corrected slide starts prefilled with what the
+  // code suggests, so Confirm and Submit agree until the user changes
+  // something.
+  if (isNewSlide && s.previous_answer) {
+    if (s.kind === "fill") {
+      otherText = s.previous_answer;
+    } else {
+      // Choice answers are the picked labels (plus any free text) joined by "; ".
+      const extra = [];
+      for (const part of s.previous_answer.split("; ")) {
+        const match = s.options.find((o) => o.label === part);
+        if (match) chosen.add(match.label);
+        else extra.push(part);
+      }
+      if (extra.length) {
+        chosen.add("__other__");
+        otherText = extra.join("; ");
+      }
+    }
+  } else if (isNewSlide && s.proposed_answer) {
     if (s.kind === "fill") {
       otherText = s.proposed_answer;
     } else {
@@ -732,6 +750,27 @@ function slideScreen() {
 
   const actions = el("div", "actions");
   // Mid-batch the answer just moves on; the last one hands the batch over.
+  // Back steps to the previous slide of the batch (nothing reached the agent
+  // yet), with the answer given there prefilled.
+  if (s.batch_index > 1) {
+    const backBtn = el("button", "ghost-btn back-btn", "← Back");
+    backBtn.onclick = async () => {
+      if (submitting) return;
+      submitting = true;
+      backBtn.disabled = true;
+      try {
+        await postJSON(P + "/back", { repo: currentRepo });
+        await refresh();
+      } catch (e) {
+        err.textContent = e.message;
+        err.style.display = "";
+        backBtn.disabled = false;
+      } finally {
+        submitting = false;
+      }
+    };
+    actions.appendChild(backBtn);
+  }
   const submitLabel = s.batch_index < s.batch_size ? "Next question" : "Submit answer";
   const submit = el("button", "primary-btn", submitLabel);
   submit.onclick = () => send(getAnswer(), submit, "Sending…", submitLabel);
